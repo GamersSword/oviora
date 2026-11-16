@@ -1,0 +1,1 @@
+Microsoft.Web.WebView2 1.0.4314.35 (nuget.org). WebView2Loader.dll x64 Authenticode: CN=Microsoft Corporation, thumbprint 4028CAD637509D4744B17EC5B42AED8D7A31E6AF

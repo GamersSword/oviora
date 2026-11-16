@@ -1,0 +1,13 @@
+#pragma once
+#include "ChiakiBackend.h"
+#include <vector>
+namespace oviora::remoteplay {
+struct DiscoveredConsole {std::string host;bool standby=false;std::string consoleId;std::string name;std::string runningApp;std::string runningTitleId;};
+struct DiscoveryReport {
+    std::vector<DiscoveredConsole> hosts;
+    std::vector<std::string> diagnostics;
+    int error=0;
+};
+DiscoveryReport discoverLocalPs5(std::stop_token);
+BackendResult wakeLocalPs5(const NativeConnectRequest&);
+}
