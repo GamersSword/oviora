@@ -1598,9 +1598,10 @@ QString OvioraServer::hashFile(const QString &path)
 	return hash;
 }
 
-// The GitHub releases of Oviora: each carries oviora-surum.json signed with this key (its secret half
-// never leaves the publisher's PC), the pack the files are taken from by byte range, the zip and the APK
-static const char GITHUB_RELEASES[] = "https://api.github.com/repos/GamersSword/oviora/releases/latest";
+// The update releases of Oviora (GamersSword/oviora-guncelleme; the people's downloads and the source stay
+// in GamersSword/oviora): each carries oviora-surum.json signed with this key (its secret half never leaves
+// the publisher's PC), the pack the files are taken from by byte range, the zip and the APK
+static const char GITHUB_RELEASES[] = "https://api.github.com/repos/GamersSword/oviora-guncelleme/releases/latest";
 static const char GITHUB_PUBLISHER[] = "gIPS8/xYzh2GyK9ylmrHXf2oA+sHSCJeLGM1So4LhAM=";
 
 static QString githubReleasesUrl()
