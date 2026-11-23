@@ -43,6 +43,7 @@
 
 
 #include <openssl/evp.h>
+#include <QtZlib/zlib.h>
 #include <openssl/rand.h>
 
 #ifdef Q_OS_WIN
@@ -1598,17 +1599,95 @@ QString OvioraServer::hashFile(const QString &path)
 	return hash;
 }
 
-// The update releases of Oviora (GamersSword/oviora-guncelleme; the people's downloads and the source stay
-// in GamersSword/oviora): each carries oviora-surum.json signed with this key (its secret half never leaves
-// the publisher's PC), the pack the files are taken from by byte range, the zip and the APK
-static const char GITHUB_RELEASES[] = "https://api.github.com/repos/GamersSword/oviora-guncelleme/releases/latest";
+// The releases of Oviora on GitHub (GamersSword/oviora) carry only what people download: the zip and the APK.
+// The zip holds Oviora/surum-dosyalari.json (version, notes, each file's path, sha256 and size) and its
+// signature Oviora/surum-dosyalari.sig, made with this key (its secret half never leaves the publisher's PC).
+// Every entry of the zip is deflated on its own: the app reads the zip's central directory and then only
+// the entries it lacks, each with an HTTP Range request.
+static const char GITHUB_RELEASES[] = "https://api.github.com/repos/GamersSword/oviora/releases/latest";
 static const char GITHUB_PUBLISHER[] = "gIPS8/xYzh2GyK9ylmrHXf2oA+sHSCJeLGM1So4LhAM=";
+static const char ZIP_LIST[] = "Oviora/surum-dosyalari.json";
+static const char ZIP_LIST_SIG[] = "Oviora/surum-dosyalari.sig";
+static const char ZIP_ROOT[] = "Oviora/";
 
 static QString githubReleasesUrl()
 {
 	// Tests point this at a local copy of the API
 	const QString test = qEnvironmentVariable("OVIORA_TEST_GITHUB_API");
 	return test.isEmpty() ? QString::fromLatin1(GITHUB_RELEASES) : test;
+}
+
+namespace {
+quint32 le32(const QByteArray &b, qsizetype at) { return quint8(b[at]) | quint8(b[at + 1]) << 8 | quint8(b[at + 2]) << 16 | quint32(quint8(b[at + 3])) << 24; }
+quint16 le16(const QByteArray &b, qsizetype at) { return quint16(quint8(b[at]) | quint8(b[at + 1]) << 8); }
+
+/** The central directory of a zip from its tail: [offset, size], or {-1, 0} */
+QPair<qint64, qint64> zipDirectory(const QByteArray &tail)
+{
+	for(qsizetype i = tail.size() - 22; i >= 0; i--)
+		if(le32(tail, i) == 0x06054b50u)
+			return { qint64(le32(tail, i + 16)), qint64(le32(tail, i + 12)) };
+	return { -1, 0 };
+}
+
+/** Raw deflate (a zip entry) to exactly size bytes; empty on any error */
+QByteArray inflateRaw(const QByteArray &in, qint64 size)
+{
+	QByteArray out(size, Qt::Uninitialized);
+	z_stream s {};
+	if(inflateInit2(&s, -MAX_WBITS) != Z_OK)
+		return {};
+	s.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in.constData()));
+	s.avail_in = uInt(in.size());
+	s.next_out = reinterpret_cast<Bytef *>(out.data());
+	s.avail_out = uInt(out.size());
+	const int r = inflate(&s, Z_FINISH);
+	const qint64 got = qint64(s.total_out);
+	inflateEnd(&s);
+	return r == Z_STREAM_END && got == size ? out : QByteArray();
+}
+}
+
+QHash<QString, OvioraServer::ZipEntry> OvioraServer::zipEntries(const QByteArray &dir)
+{
+	QHash<QString, ZipEntry> out;
+	for(qsizetype i = 0; i + 46 <= dir.size() && le32(dir, i) == 0x02014b50u;)
+	{
+		const int nlen = le16(dir, i + 28), elen = le16(dir, i + 30), clen = le16(dir, i + 32);
+		if(i + 46 + nlen > dir.size())
+			break;
+		ZipEntry e;
+		e.method = le16(dir, i + 10);
+		e.csize = le32(dir, i + 20);
+		e.size = le32(dir, i + 24);
+		e.offset = le32(dir, i + 42);
+		out.insert(QString::fromUtf8(dir.mid(i + 46, nlen)), e);
+		i += 46 + nlen + elen + clen;
+	}
+	return out;
+}
+
+QByteArray OvioraServer::zipEntryData(const QByteArray &chunk, const ZipEntry &e)
+{
+	// The chunk starts at the entry's local header: its name and extra field come before the data
+	if(chunk.size() < 30 || le32(chunk, 0) != 0x04034b50u)
+		return {};
+	const qsizetype at = 30 + le16(chunk, 26) + le16(chunk, 28);
+	if(at + e.csize > chunk.size())
+		return {};
+	const QByteArray data = chunk.mid(at, e.csize);
+	if(e.method == 0)
+		return data.size() == e.size ? data : QByteArray();
+	return e.method == 8 ? inflateRaw(data, e.size) : QByteArray();
+}
+
+QNetworkReply *OvioraServer::zipRange(qint64 from, qint64 to)
+{
+	QNetworkRequest req{QUrl(gh_zip_url)};
+	req.setRawHeader("User-Agent", "Oviora");
+	req.setRawHeader("Range", QByteArray("bytes=") + QByteArray::number(from) + '-' + QByteArray::number(qMin(to, gh_zip_size - 1)));
+	req.setTransferTimeout(60000);
+	return net->get(req);
 }
 
 bool OvioraServer::verifySignature(const QByteArray &manifest, const QByteArray &signature) const
@@ -1648,58 +1727,83 @@ void OvioraServer::checkUpdate()
 
 void OvioraServer::githubCheckUpdate()
 {
-	auto get = [this](const QUrl &url, bool api) {
-		QNetworkRequest req(url);
-		req.setRawHeader("User-Agent", "Oviora");
-		if(api)
-			req.setRawHeader("Accept", "application/vnd.github+json");
-		req.setTransferTimeout(30000);
-		return net->get(req);
-	};
-	QNetworkReply *reply = get(QUrl(githubReleasesUrl()), true);
-	connect(reply, &QNetworkReply::finished, this, [this, reply, get]() {
+	QNetworkRequest req{QUrl(githubReleasesUrl())};
+	req.setRawHeader("User-Agent", "Oviora");
+	req.setRawHeader("Accept", "application/vnd.github+json");
+	req.setTransferTimeout(30000);
+	QNetworkReply *reply = net->get(req);
+	connect(reply, &QNetworkReply::finished, this, [this, reply]() {
 		reply->deleteLater();
 		const QJsonObject release = QJsonDocument::fromJson(reply->readAll()).object();
-		QHash<QString, QString> assets;
+		gh_zip_url.clear();
+		gh_zip_size = 0;
 		for(const QJsonValue &v : release.value("assets").toArray())
-			assets.insert(v.toObject().value("name").toString(), v.toObject().value("browser_download_url").toString());
-		if(reply->error() != QNetworkReply::NoError || !assets.contains("oviora-surum.json") || !assets.contains("oviora-surum.sig"))
+		{
+			const QJsonObject a = v.toObject();
+			const QString name = a.value("name").toString();
+			if(name.startsWith(QLatin1String("Oviora-")) && name.endsWith(QLatin1String(".zip")))
+			{
+				gh_zip_url = a.value("browser_download_url").toString();
+				gh_zip_size = qint64(a.value("size").toDouble());
+			}
+		}
+		if(reply->error() != QNetworkReply::NoError || gh_zip_url.isEmpty() || gh_zip_size < 22)
 		{
 			qCWarning(yakamozServer) << "GitHub release not available:" << reply->errorString() << "- asking the server";
 			return serverCheckUpdate();
 		}
-		QNetworkReply *json = get(QUrl(assets.value("oviora-surum.json")), false);
-		QNetworkReply *sig = get(QUrl(assets.value("oviora-surum.sig")), false);
-		auto pending = std::make_shared<int>(2);
-		auto done = [this, json, sig, assets, pending]() {
-			if(--*pending)
-				return;
-			json->deleteLater();
-			sig->deleteLater();
-			const QByteArray manifest = json->readAll();
-			if(json->error() != QNetworkReply::NoError || sig->error() != QNetworkReply::NoError)
+		// The zip's tail (its end record), then its central directory
+		QNetworkReply *tail = zipRange(qMax<qint64>(0, gh_zip_size - 66000), gh_zip_size - 1);
+		connect(tail, &QNetworkReply::finished, this, [this, tail]() {
+			tail->deleteLater();
+			const auto [dirAt, dirSize] = zipDirectory(tail->readAll());
+			if(tail->error() != QNetworkReply::NoError || dirAt < 0 || dirSize <= 0)
 			{
-				qCWarning(yakamozServer) << "GitHub release manifest not downloaded:" << json->errorString() << sig->errorString();
+				qCWarning(yakamozServer) << "GitHub zip end not read:" << tail->errorString() << "- asking the server";
 				return serverCheckUpdate();
 			}
-			if(!verifySignatureWith(QString::fromLatin1(GITHUB_PUBLISHER), manifest, QByteArray::fromBase64(sig->readAll().trimmed())))
-			{
-				// Not signed by the publisher: whoever changed the release, nothing of it is installed
-				update_state = "error";
-				update_text = tr("Güncellemenin imzası doğrulanamadı, kurulmadı.");
-				emit updateChanged();
-				qCWarning(yakamozServer) << "GitHub update signature rejected";
-				return;
-			}
-			const QJsonObject m = QJsonDocument::fromJson(manifest).object();
-			const QString pack = assets.value(m.value("pack").toString());
-			if(pack.isEmpty())
-				return serverCheckUpdate();
-			qCInfo(yakamozServer) << "GitHub release" << m.value("version").toString();
-			takeManifest(manifest, m.value("version").toString(), m.value("notes").toString(), pack);
-		};
-		connect(json, &QNetworkReply::finished, this, done);
-		connect(sig, &QNetworkReply::finished, this, done);
+			QNetworkReply *dir = zipRange(dirAt, dirAt + dirSize - 1);
+			connect(dir, &QNetworkReply::finished, this, [this, dir]() {
+				dir->deleteLater();
+				gh_entries = zipEntries(dir->readAll());
+				const ZipEntry list = gh_entries.value(QLatin1String(ZIP_LIST)), sig = gh_entries.value(QLatin1String(ZIP_LIST_SIG));
+				if(dir->error() != QNetworkReply::NoError || list.csize <= 0 || sig.csize <= 0)
+				{
+					qCWarning(yakamozServer) << "GitHub zip without a signed list:" << dir->errorString() << "- asking the server";
+					return serverCheckUpdate();
+				}
+				QNetworkReply *a = zipRange(list.offset, list.offset + 30 + 1024 + list.csize);
+				QNetworkReply *b = zipRange(sig.offset, sig.offset + 30 + 1024 + sig.csize);
+				auto pending = std::make_shared<int>(2);
+				auto done = [this, a, b, list, sig, pending]() {
+					if(--*pending)
+						return;
+					a->deleteLater();
+					b->deleteLater();
+					const QByteArray manifest = zipEntryData(a->readAll(), list);
+					const QByteArray signature = QByteArray::fromBase64(zipEntryData(b->readAll(), sig).trimmed());
+					if(manifest.isEmpty())
+					{
+						qCWarning(yakamozServer) << "GitHub release list not read - asking the server";
+						return serverCheckUpdate();
+					}
+					if(!verifySignatureWith(QString::fromLatin1(GITHUB_PUBLISHER), manifest, signature))
+					{
+						// Not signed by the publisher: whoever changed the release, nothing of it is installed
+						update_state = "error";
+						update_text = tr("Güncellemenin imzası doğrulanamadı, kurulmadı.");
+						emit updateChanged();
+						qCWarning(yakamozServer) << "GitHub update signature rejected";
+						return;
+					}
+					const QJsonObject m = QJsonDocument::fromJson(manifest).object();
+					qCInfo(yakamozServer) << "GitHub release" << m.value("version").toString();
+					takeManifest(manifest, m.value("version").toString(), m.value("notes").toString(), gh_zip_url);
+				};
+				connect(a, &QNetworkReply::finished, this, done);
+				connect(b, &QNetworkReply::finished, this, done);
+			});
+		});
 	});
 }
 
@@ -1756,8 +1860,18 @@ void OvioraServer::takeManifest(const QByteArray &manifest, const QString &versi
 		// Never outside the program folder
 		if(path.isEmpty() || path.contains("..") || path.contains('\\') || path.contains(':') || QDir::isAbsolutePath(path))
 			continue;
-		files.append({ path, f.value("sha256").toString(), qint64(f.value("size").toDouble()),
-			f.contains("offset") ? qint64(f.value("offset").toDouble()) : -1, qint64(f.value("csize").toDouble()) });
+		UpdateFile u { path, f.value("sha256").toString(), qint64(f.value("size").toDouble()) };
+		// From the GitHub zip: where the file's entry is in it
+		if(!packUrl.isEmpty())
+		{
+			const auto it = gh_entries.constFind(QLatin1String(ZIP_ROOT) + path);
+			if(it == gh_entries.constEnd() || it->size != u.size)
+				continue;	// not in the zip (or not the listed size): never fetched from the wrong place
+			u.offset = it->offset;
+			u.csize = it->csize;
+			u.method = it->method;
+		}
+		files.append(u);
 	}
 	// Which files differ from what is installed (hashing runs off the UI thread)
 	auto watcher = new QFutureWatcher<QList<UpdateFile>>(this);
@@ -1840,35 +1954,37 @@ void OvioraServer::downloadNext()
 		emit updateChanged();
 		return;
 	}
-	if(f.offset >= 0 && f.csize > 4 && !gh_pack_url.isEmpty())
+	if(f.offset >= 0 && f.csize > 0 && !gh_pack_url.isEmpty())
 	{
-		// The file's block of the GitHub release pack: qCompress data, the hash checked after unpacking
-		QNetworkRequest req{QUrl(gh_pack_url)};
-		req.setRawHeader("User-Agent", "Oviora");
-		req.setRawHeader("Range", QByteArray("bytes=") + QByteArray::number(f.offset) + '-' + QByteArray::number(f.offset + f.csize - 1));
-		req.setTransferTimeout(60000);
-		download = net->get(req);
-		auto block = std::make_shared<QByteArray>();
+		// The file's entry of the GitHub zip (its local header and data), unpacked and its hash checked
+		download = zipRange(f.offset, f.offset + 30 + 1024 + f.csize);
+		auto chunk = std::make_shared<QByteArray>();
 		const qint64 doneBefore = update_bytes_done;
-		connect(download, &QNetworkReply::readyRead, this, [this, block, f, doneBefore]() {
-			block->append(download->readAll());
-			if(block->size() > f.csize)
-				return download->abort();  // a server ignoring Range sends the whole pack
-			update_bytes_done = doneBefore + f.size * block->size() / std::max<qint64>(1, f.csize);
+		const qint64 want = 30 + 1024 + f.csize + 1;
+		connect(download, &QNetworkReply::readyRead, this, [this, chunk, f, doneBefore, want]() {
+			chunk->append(download->readAll());
+			if(chunk->size() > want)
+				return download->abort();  // a server ignoring Range sends the whole zip
+			update_bytes_done = doneBefore + f.size * qMin<qint64>(chunk->size(), f.csize) / std::max<qint64>(1, f.csize);
 			update_progress = update_bytes_total ? double(update_bytes_done) / double(update_bytes_total) : 0;
 			update_text = tr("Güncelleme indiriliyor: %1 / %2 MB").arg(update_bytes_done / 1048576).arg(update_bytes_total / 1048576);
 			emit updateChanged();
 		});
-		connect(download, &QNetworkReply::finished, this, [this, block, f, target, doneBefore]() {
+		connect(download, &QNetworkReply::finished, this, [this, chunk, f, target, doneBefore]() {
 			download->deleteLater();
-			block->append(download->readAll());
+			chunk->append(download->readAll());
 			const int status = download->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-			QByteArray data = download->error() == QNetworkReply::NoError && status == 206 && block->size() == f.csize ? qUncompress(*block) : QByteArray();
-			block->clear();
+			ZipEntry e;
+			e.offset = f.offset;
+			e.csize = f.csize;
+			e.size = f.size;
+			e.method = f.method;
+			QByteArray data = download->error() == QNetworkReply::NoError && status == 206 ? zipEntryData(*chunk, e) : QByteArray();
+			chunk->clear();
 			if(data.size() != f.size || QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex()) != f.sha256 ||
 				download_file->write(data) != data.size() || !download_file->flush())
 			{
-				qCWarning(yakamozServer) << "Update block failed:" << f.path << "http" << status << download->errorString();
+				qCWarning(yakamozServer) << "Update entry failed:" << f.path << "http" << status << download->errorString();
 				download_file->close();
 				download_file->remove();
 				update_bytes_done = doneBefore;

@@ -327,7 +327,14 @@ private:
 
 	// Updates
 	// offset/csize: the file's block in the GitHub release pack (offset -1: from the server)
-	struct UpdateFile { QString path, sha256; qint64 size = 0, offset = -1, csize = 0; };
+	struct UpdateFile { QString path, sha256; qint64 size = 0, offset = -1, csize = 0; int method = 0; };
+	/** An entry of a zip's central directory: where its local header starts, its sizes, 0 stored / 8 deflated */
+	struct ZipEntry { qint64 offset = 0, csize = 0, size = 0; int method = 0; };
+	static QHash<QString, ZipEntry> zipEntries(const QByteArray &directory);
+	/** The entry's content from a chunk that starts at its local header; empty when anything is off */
+	static QByteArray zipEntryData(const QByteArray &chunk, const ZipEntry &entry);
+	/** A byte range of the GitHub release's zip (gh_zip_url) */
+	QNetworkReply *zipRange(qint64 from, qint64 to);
 	QString appDir() const;
 	QString stageDir() const;
 	QString hashFile(const QString &path);
@@ -376,7 +383,10 @@ private:
 	QList<UpdateFile> update_files, update_queue;
 	qint64 update_bytes_total = 0, update_bytes_done = 0;
 	QPointer<QNetworkReply> download;
-	QString gh_pack_url;	// the release pack of the update being downloaded, empty when it comes from the server
+	QString gh_pack_url;	// the GitHub zip of the update being downloaded, empty when it comes from the server
+	QString gh_zip_url;
+	qint64 gh_zip_size = 0;
+	QHash<QString, ZipEntry> gh_entries;
 	QFile *download_file = nullptr;
 	// Development build (no OVIORA_PLATFORM_UPDATES): the release the server offers, sent as ours
 	QString dev_server_version;
