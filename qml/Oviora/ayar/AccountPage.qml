@@ -3,11 +3,13 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import Oviora
 
-// Oviora account: who is signed in, the PSN link that shares the PS5s, about (version, Arfep)
+// Oviora account: who is signed in, the linked PSN accounts that share the PS5s, about (version, Arfep)
 SettingsPage {
     id: page
     signal signOutRequested()
     signal psnLinkRequested()
+    // Oyun bilgisi: Sony's sign-in for that linked PSN account (link: its psnLinks id, name: as shown)
+    signal psnWideRequested(int link, string name)
     signal reportRequested()
     signal deleteAccountRequested()
     signal confirmRequested(string title, string text, var action)
@@ -26,13 +28,72 @@ SettingsPage {
         }
     }
 
+    // Linked PSN accounts (up to psnLinksMax); each has its own PS5s, removed with it
+    readonly property var psnLinks: platform.psnLinks || []
+    readonly property int psnLinksMax: platform.psnLinksMax || 1
+    readonly property bool streamerMode: oviora.preferences.streamerMode === true
+    function psnLinkName(link) {
+        return page.streamerMode || !link.name ? "PSN " + (link.n || 1) : link.name
+    }
+
     SettingsCard {
-        title: qsTr("PSN hesabı")
-        description: platform.psnLinked
+        title: qsTr("PSN hesapları")
+        description: page.psnLinks.length > 0
             ? qsTr("Bağlı. PS5'lerin ana ekranda; arkadaşlarına açtıkların internet üzerinden onlara da görünür. Giriş bilgin sunucuda şifreli durur.")
             : qsTr("Bağlı değil. Kendi PS5'ini eklemek ve arkadaşlarınla paylaşmak için PSN hesabınla bir kez giriş yap.")
+        Repeater {
+            model: page.psnLinks
+            delegate: SettingRow {
+                required property var modelData
+                readonly property string linkName: page.psnLinkName(modelData)
+                readonly property int count: modelData.consoles || 0
+                title: modelData.primary && page.psnLinks.length > 1 ? qsTr("%1 (ana hesap)").arg(linkName) : linkName
+                help: count > 0 ? qsTr("%1 PS5").arg(count) : qsTr("Bu hesapta PS5 yok")
+                // Oyun bilgisi (opt-in per account): "ok", "expired" or ""; "none" = a server without it
+                readonly property string wide: modelData.wide === undefined || modelData.wide === null ? "none" : String(modelData.wide)
+                RowLayout {
+                    spacing: 10
+                    Label {
+                        visible: wide === "ok" || wide === "expired"
+                        textFormat: Text.PlainText
+                        text: wide === "ok" ? qsTr("Oyun bilgisi açık") : qsTr("Oyun bilgisi için yeniden giriş gerekli")
+                        color: wide === "ok" ? Tema.ok : Tema.warm
+                        font.family: Tema.body
+                        font.pixelSize: 13
+                        wrapMode: Text.WordWrap
+                        horizontalAlignment: Text.AlignRight
+                        Layout.maximumWidth: 280
+                    }
+                    PillButton {
+                        visible: wide !== "none"
+                        compact: true
+                        kind: wide === "ok" ? "quiet" : "secondary"
+                        text: wide === "ok" ? qsTr("Kapat") : wide === "expired" ? qsTr("Yeniden giriş") : qsTr("Oyun bilgisini aç")
+                        enabled: !platform.busy
+                        onClicked: {
+                            if (wide === "ok")
+                                platform.wideUnlinkPsn(modelData.id);
+                            else if (wide === "expired")
+                                page.psnWideRequested(modelData.id, linkName);
+                            else
+                                page.confirmRequested(qsTr("Oyun bilgisi"),
+                                    qsTr("Arkadaşların PS5'te ne oynadığını görsün diye Oviora, Sony'ye bu PSN hesabıyla giriş yapar ve çevrimiçi durumunu okur. Giriş bilgin sunucuda güçlü şifrelemeyle saklanır ve yalnız bunun için kullanılır. İstediğin zaman kapatabilirsin."),
+                                    () => page.psnWideRequested(modelData.id, linkName));
+                        }
+                    }
+                    PillButton {
+                        kind: "danger"
+                        compact: wide !== "none"
+                        text: qsTr("Kaldır")
+                        onClicked: page.confirmRequested(qsTr("PSN hesabını kaldır"),
+                            qsTr("%1 kaldırılsın mı? Bu hesabın PS5'leri ve arkadaşlarınla paylaşımları da kaldırılır; o PS5'lerde oynayan varsa çıkar.").arg(linkName),
+                            () => platform.unlinkPsn(modelData.id))
+                    }
+                }
+            }
+        }
         SettingRow {
-            visible: !platform.psnLinked
+            visible: page.psnLinks.length === 0
             title: qsTr("PSN hesabını bağla")
             help: qsTr("Bir kez giriş yapman yeter.")
             PillButton {
@@ -42,24 +103,25 @@ SettingsPage {
             }
         }
         SettingRow {
-            visible: platform.psnLinked
+            visible: page.psnLinks.length > 0
+            title: qsTr("Başka bir PSN hesabı")
+            help: page.psnLinks.length >= page.psnLinksMax
+                ? qsTr("En fazla %1 PSN hesabı").arg(page.psnLinksMax)
+                : qsTr("Başka bir PSN hesabıyla giriş yap; o hesabın PS5'leri de buraya gelir.")
+            PillButton {
+                text: qsTr("PSN hesabı ekle")
+                enabled: page.psnLinks.length < page.psnLinksMax && !platform.busy
+                onClicked: page.psnLinkRequested()
+            }
+        }
+        SettingRow {
+            visible: page.psnLinks.length > 0
             title: qsTr("PS5 listesi")
             help: qsTr("Yeni bir PS5 aldıysan ya da adını değiştirdiysen listeyi yenile.")
             PillButton {
                 text: qsTr("Yenile")
+                enabled: !platform.busy
                 onClicked: platform.refreshConsoles()
-            }
-        }
-        SettingRow {
-            visible: platform.psnLinked
-            title: qsTr("PSN hesabını kaldır")
-            help: qsTr("PSN girişin sunucudan silinir; PS5'lerine kimse bağlanamaz.")
-            PillButton {
-                kind: "danger"
-                text: qsTr("Kaldır")
-                onClicked: page.confirmRequested(qsTr("PSN hesabını kaldır"),
-                    qsTr("PSN girişin sunucudan silinir; PS5'lerine kimse bağlanamaz, oynayan varsa çıkar."),
-                    () => platform.unlinkPsn())
             }
         }
     }

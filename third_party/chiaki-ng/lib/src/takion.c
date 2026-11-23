@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
@@ -55,6 +56,9 @@
 #define TAKION_EXPECT_TIMEOUT_MS 5000
 
 #define MAX_CONNECT_RESEND_TRIES 3
+// Oviora: one try of the connect handshake (init ack, cookie ack). It was TAKION_EXPECT_TIMEOUT_MS (5 s), so the
+// stream connection's own 5 s limit ended the connect before a lost cookie was ever sent again.
+#define TAKION_CONNECT_TRY_TIMEOUT_MS 2000
 /**
  * Base type of Takion packets. Lower nibble of the first byte in datagrams.
  */
@@ -1605,7 +1609,7 @@ static ChiakiErrorCode takion_recv_message_init_ack(ChiakiTakion *takion, Takion
 {
 	uint8_t message[1 + TAKION_MESSAGE_HEADER_SIZE + 0x10 + TAKION_COOKIE_SIZE];
 	size_t received_size = sizeof(message);
-	ChiakiErrorCode err = takion_recv(takion, message, &received_size, TAKION_EXPECT_TIMEOUT_MS);
+	ChiakiErrorCode err = takion_recv(takion, message, &received_size, TAKION_CONNECT_TRY_TIMEOUT_MS);
 	if(err != CHIAKI_ERR_SUCCESS)
 		return err;
 
@@ -1652,7 +1656,7 @@ static ChiakiErrorCode takion_recv_message_cookie_ack(ChiakiTakion *takion)
 {
 	uint8_t message[1 + TAKION_MESSAGE_HEADER_SIZE];
 	size_t received_size = sizeof(message);
-	ChiakiErrorCode err = takion_recv(takion, message, &received_size, TAKION_EXPECT_TIMEOUT_MS);
+	ChiakiErrorCode err = takion_recv(takion, message, &received_size, TAKION_CONNECT_TRY_TIMEOUT_MS);
 	if(err != CHIAKI_ERR_SUCCESS)
 		return err;
 
@@ -1704,6 +1708,29 @@ static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uin
 	{
 		free(buf);
 		return;
+	}
+	// Oviora, test runs only: OVIORA_TEST_DROP_VIDEO=<n>[,<burst>] drops <burst> video packets in a row (default 1)
+	// out of every n, as a far, lossy internet line does (bursts beat the FEC). Unset: nothing happens.
+	if(base_type == TAKION_PACKET_TYPE_VIDEO)
+	{
+		static int drop_every = -1, drop_burst = 1;
+		static unsigned drop_count = 0;
+		if(drop_every < 0)
+		{
+			const char *v = getenv("OVIORA_TEST_DROP_VIDEO");
+			drop_every = v ? atoi(v) : 0;
+			const char *comma = v ? strchr(v, ',') : NULL;
+			drop_burst = comma ? atoi(comma + 1) : 1;
+			if(drop_burst < 1 || drop_burst >= drop_every)
+				drop_burst = 1;
+			if(drop_every > 1)
+				CHIAKI_LOGW(takion->log, "OVIORA_TEST_DROP_VIDEO: dropping %d of every %d video packets in a row (test)", drop_burst, drop_every);
+		}
+		if(drop_every > 1 && (drop_count++ % (unsigned)drop_every) < (unsigned)drop_burst)
+		{
+			free(buf);
+			return;
+		}
 	}
 	ChiakiTakionAVPacket packet;
 	ChiakiErrorCode err = takion->av_packet_parse(&packet, &takion->key_state, buf, buf_size);

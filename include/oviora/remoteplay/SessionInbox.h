@@ -47,6 +47,7 @@ public:
     void decodeFailed(Generation);
     bool isCurrent(Generation)const;
     Snapshot snapshot()const;
+    Snapshot quickSnapshot()const;
     void decodeStarted(HostTime now,HostTime arrival);
     void decodeFinished(HostTime now);
     void frameDecoded(HostTime now);

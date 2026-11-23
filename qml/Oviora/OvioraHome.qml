@@ -20,6 +20,11 @@ Pane {
         confirmLoader.active = true;
         if (confirmLoader.item) confirmLoader.item.popup.ask(title, text, action);
     }
+    // The same question whose "Evet" only opens after a few seconds (giving a friend your PS5); cancel runs onCancel
+    function showSlowConfirmDialog(title, text, action, onCancel) {
+        confirmLoader.active = true;
+        if (confirmLoader.item) confirmLoader.item.popup.ask(title, text, action, 3, onCancel);
+    }
     function showInfoDialog(title, text) {
         confirmLoader.active = true;
         if (confirmLoader.item) confirmLoader.item.popup.tell(title, text);
@@ -29,16 +34,26 @@ Pane {
     function showToast(title, text) { toast.show(title, text) }
     function showPsnLinkDialog() {
         psnLinkLoader.active = true;
-        if (psnLinkLoader.item) psnLinkLoader.item.popup.start();
+        if (psnLinkLoader.item) psnLinkLoader.item.popup.start(0, "");
+    }
+    // Oyun bilgisi: the same Sony sign-in for one linked PSN account; what Sony gives is read and sent in C++
+    function showPsnWideDialog(link, name) {
+        if (!(link > 0)) return;
+        psnLinkLoader.active = true;
+        if (psnLinkLoader.item) psnLinkLoader.item.popup.start(link, name);
     }
     // End-to-end encrypted messages (MessageCenter, the context property "messages")
     readonly property var msgs: messages
+    // The stream's picture is shown (Main.qml): incoming messages go to its card, not this toast
+    property bool streamShown: false
 
     readonly property var server: platform
     readonly property bool streamerMode: oviora.preferences.streamerMode === true
     // --test-register: the register form even when signed in (screenshots of the form)
     readonly property bool testRegister: (Qt.application.arguments || []).indexOf("--test-register") >= 0
-    readonly property bool signedIn: server.status == "active" && !testRegister
+    // --test-psn-links: the signed-in home with made-up PSN accounts and PS5s even when signed out
+    // --test-groups: the same with made-up friends, groups and a group conversation
+    readonly property bool signedIn: (server.status == "active" || server.testPsnLinks === true || server.testGroups === true) && !testRegister
     property bool registering: testRegister
     property bool waiting: false
     // Invite code at sign-up / sign-in: shown on request, checked as it is typed
@@ -78,6 +93,7 @@ Pane {
     function closePopups() {
         if (notifLoader.item) notifLoader.item.popup.close();
         if (historyLoader.item) historyLoader.item.popup.close();
+        if (shareConsolesLoader.item) shareConsolesLoader.item.popup.close();
     }
     StackView.onDeactivating: closePopups()
     // Güncelleme ekranı (bu sayfanın içinde, açılır pencerelerin altında kalan bir katman) belirince
@@ -94,6 +110,23 @@ Pane {
         if (signedIn)
             server.refresh();
     }
+
+    // Diagnostics for "the list sometimes scrolls down by itself at start": a move of either column that no
+    // drag, wheel or scroll bar made goes to the log with the sizes and the focused item
+    component ScrollWatch: Connections {
+        required property ScrollView view
+        required property string name
+        target: view.contentItem
+        function onContentYChanged() {
+            const f = view.contentItem;
+            if (f.moving || f.dragging || (view.ScrollBar.vertical && view.ScrollBar.vertical.pressed))
+                return;
+            console.log("home-scroll " + name + " y=" + Math.round(f.contentY) + " h=" + Math.round(f.contentHeight)
+                + " view=" + Math.round(f.height) + " focus=" + (view.Window.activeFocusItem ? view.Window.activeFocusItem.toString() : "-"));
+        }
+    }
+    ScrollWatch { view: consoleScroll; name: "consoles" }
+    ScrollWatch { view: friendScroll; name: "friends" }
 
     Connections {
         target: home.server
@@ -128,6 +161,19 @@ Pane {
         return n;
     }
 
+    // The PSN account my own PS5 belongs to ("kardesim_ps"), shown after its name; "" when unknown
+    // and in streamer mode (names stay hidden there)
+    function psnOf(c) {
+        if (!c || !c.mine || streamerMode)
+            return "";
+        let name = c.psn_name;
+        if (!name) {
+            const own = myConsole(c.duid);
+            name = own ? own.psn_name : "";
+        }
+        return (name || "").trim();
+    }
+
     // My console with this duid, from the account view
     function myConsole(duid) {
         for (const c of (server.consoles || []))
@@ -136,11 +182,94 @@ Pane {
         return null;
     }
 
+    // The rows of one physical PS5 together. The server sends a row per (PS5, PSN account); rows with
+    // the same `ps5` key and the same owner are one PS5 (mine: all mine, a friend's: per host). A row
+    // without the key (an older server) is a PS5 of its own. Groups in the order of their first row:
+    // [{ key, rows: [row, ...], indexes: [index in list, ...] }]
+    function ps5Groups(list) {
+        const groups = [];
+        const at = {};
+        const rows = list || [];
+        for (let i = 0; i < rows.length; i++) {
+            const c = rows[i];
+            if (!c)
+                continue;
+            const key = c.ps5 ? (c.mine ? "me" : "f:" + (c.host || "")) + "/" + c.ps5 : "row:" + i;
+            if (at[key] === undefined) {
+                at[key] = groups.length;
+                groups.push({ key: key, rows: [], indexes: [] });
+            }
+            groups[at[key]].rows.push(c);
+            groups[at[key]].indexes.push(i);
+        }
+        return groups;
+    }
+    // A PS5 card's title: the name most of its rows have, else the first row's
+    function ps5Title(rows) {
+        const count = {};
+        let best = rows.length ? rows[0].name : "", most = 1;
+        for (const c of rows) {
+            count[c.name] = (count[c.name] || 0) + 1;
+            if (count[c.name] > most) {
+                most = count[c.name];
+                best = c.name;
+            }
+        }
+        return best;
+    }
+    // A PSN row's state words: "bağlısın", "mehmet oynuyor", "boşta"
+    function psnStateWord(c) {
+        if (server.sessionDuid == c.duid)
+            return server.sessionState == "asking" ? qsTr("bağlanılıyor…") : qsTr("bağlısın");
+        if (c.busy.length > 0)
+            return qsTr("%1 oynuyor").arg(c.busy);
+        return qsTr("boşta");
+    }
+    // A PSN row's (or PS5 card's) state line: whose it is, the state words, what it runs
+    function psnStateLine(c, state, app) {
+        const line = c.mine ? qsTr("Senin konsolun, %1").arg(state) : qsTr("%1 paylaşıyor, %2").arg(c.host).arg(state);
+        // What the PS5 runs, as its owner's app last reported it (me.available[].app)
+        return app && app.name ? line + " · " + qsTr("Şu an açık: %1").arg(app.name) : line;
+    }
+
+    // A friend row's line about my PS5s: "Paylaşılan: Salon PS5" (one or two named), "3 PS5 paylaşılıyor",
+    // "PS5 paylaşılmıyor"; it reads the live account view, so it changes when the server answers
+    function shareSummary(friend) {
+        // Counted per physical PS5: its rows on several PSN accounts are one
+        const names = [];
+        for (const g of ps5Groups(server.consoles)) {
+            const rows = g.rows.filter(c => (c.shared || []).indexOf(friend) >= 0);
+            if (rows.length > 0)
+                names.push(ps5Title(rows));
+        }
+        if (names.length === 0)
+            return qsTr("PS5 paylaşılmıyor");
+        if (names.length <= 2)
+            return qsTr("Paylaşılan: %1").arg(names.join(", "));
+        return qsTr("%1 PS5 paylaşılıyor").arg(names.length);
+    }
+
     // Two letters for a name's circle
     function initials(name) {
         const s = (name || "").trim();
         return s.length ? s.substring(0, Math.min(2, s.length)).toLocaleUpperCase(Qt.locale("tr_TR")) : "?";
     }
+
+    // A friend's or group member's presence (OvioraServer.presenceText): "Oynuyor: GTA VI · Ahmet'in
+    // PS5'inde · 25 dk", "Çevrimdışı · 2 sa önce"; streamer mode leaves the PS5's owner unnamed.
+    // presenceTick reads the times again every minute between the account's refreshes.
+    property int presenceTick: 0
+    Timer { interval: 60000; running: home.signedIn; repeat: true; onTriggered: home.presenceTick++ }
+    function presenceLine(p) { presenceTick; return p ? server.presenceText(p, streamerMode) : ""; }
+    // playing or online: the green light
+    function presenceOn(p) { return !!p && (p.state === "playing" || p.state === "online"); }
+    function presencePlaying(p) { return !!p && p.state === "playing"; }
+    // "5 kişi · 2 kişi oynuyor" under a group's name
+    function groupSummary(g) {
+        const n = (g && g.members) ? g.members.length : 0;
+        return g && g.playing > 0 ? qsTr("%1 kişi").arg(n) + " · " + qsTr("%1 kişi oynuyor").arg(g.playing) : qsTr("%1 kişi").arg(n);
+    }
+    function groupUnreadOf(id) { return (msgs.groupUnread && msgs.groupUnread[String(id)]) || 0; }
 
     // ── Pieces ───────────────────────────────────────────────────────────
     // kind: "primary" (purple fill, the main action of a row), "secondary" (outlined), "quiet" (text only)
@@ -148,11 +277,13 @@ Pane {
         id: tb
         property string kind: "secondary"
         property bool large: false
+        // the sub-rows of a PS5 card: lower, smaller words
+        property bool compact: false
         property color tone: kind === "quiet" ? Tema.muted : Tema.text
         focusPolicy: Qt.NoFocus
         hoverEnabled: true
-        implicitHeight: large ? 52 : 40
-        implicitWidth: label.implicitWidth + (kind === "quiet" ? 20 : (large ? 56 : 36))
+        implicitHeight: large ? 52 : (compact ? 32 : 40)
+        implicitWidth: label.implicitWidth + (kind === "quiet" ? (compact ? 16 : 20) : (large ? 56 : (compact ? 28 : 36)))
         background: Rectangle {
             radius: height / 2
             opacity: tb.enabled ? 1 : 0.45
@@ -171,7 +302,7 @@ Pane {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             font.family: Tema.body
-            font.pixelSize: tb.large ? 17 : 15
+            font.pixelSize: tb.large ? 17 : (tb.compact ? 14 : 15)
             font.weight: tb.kind === "quiet" ? Font.Medium : Font.DemiBold
             color: tb.kind === "primary" ? Tema.inkOnAccent : (tb.kind === "quiet" && tb.hovered ? Tema.text : tb.tone)
             opacity: tb.enabled ? 1 : 0.55
@@ -285,6 +416,8 @@ Pane {
         property color tone: Tema.muted
         property string name
         property string stateText
+        // small grey words right after the name (the PSN account of my own PS5), "" for none
+        property string nameNote
         default property alias actions: actionRow.data
         Layout.fillWidth: true
         implicitHeight: 78
@@ -306,15 +439,33 @@ Pane {
                 rightMargin: 16
             }
             spacing: 3
-            Label {
-                textFormat: Text.PlainText
+            RowLayout {
                 Layout.fillWidth: true
-                text: cr.name
-                elide: Text.ElideRight
-                font.family: Tema.body
-                font.pixelSize: 18
-                font.weight: Font.DemiBold
-                color: Tema.text
+                spacing: 12
+                Label {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: cr.nameNote.length === 0
+                    Layout.maximumWidth: implicitWidth
+                    Layout.minimumWidth: Math.min(implicitWidth, 80)
+                    Layout.alignment: Qt.AlignBaseline
+                    text: cr.name
+                    elide: Text.ElideRight
+                    font.family: Tema.body
+                    font.pixelSize: 18
+                    font.weight: Font.DemiBold
+                    color: Tema.text
+                }
+                Label {
+                    textFormat: Text.PlainText
+                    visible: cr.nameNote.length > 0
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignBaseline
+                    text: cr.nameNote
+                    elide: Text.ElideRight
+                    font.family: Tema.body
+                    font.pixelSize: 12
+                    color: Tema.faint
+                }
             }
             StateLine {
                 Layout.fillWidth: true
@@ -340,6 +491,292 @@ Pane {
         }
     }
 
+    // The actions of one PSN row (c: a row of home.server.available), on a plain row and on a PS5 card's
+    // sub-row (compact; the card has its own "Çıkar": kick false)
+    component PsnActions: RowLayout {
+        id: pa
+        property var c: ({})
+        property bool compact: false
+        property bool kick: true
+        readonly property var mine: c.mine ? home.myConsole(c.duid) : null
+        readonly property bool here: home.server.sessionDuid == c.duid
+        readonly property bool taken: (c.busy || "").length > 0
+        // Someone plays on a friend's PS5: wait in line (servers without a queue: just "Dolu")
+        readonly property bool canQueue: taken && !here && !c.mine && c.queued !== undefined
+        readonly property bool queued: !!c.queued
+        spacing: compact ? 4 : 8
+
+        // Someone else on my PS5: I can always take it back
+        TextButton {
+            visible: pa.kick && !!pa.mine && pa.taken && pa.mine.sid.length > 0
+            compact: pa.compact
+            kind: "quiet"
+            tone: Tema.warm
+            text: qsTr("Çıkar")
+            onClicked: home.showConfirmDialog(qsTr("Çıkar"),
+                qsTr("%1 oturumu birkaç saniye içinde kapanır ve sen tekrar açana kadar bu PS5'e bağlanamaz.").arg(pa.c.busy),
+                () => home.server.kick(pa.mine.sid))
+        }
+        TextButton {
+            visible: pa.canQueue
+            compact: pa.compact
+            kind: pa.queued ? "quiet" : "secondary"
+            tone: pa.queued ? Tema.accentText : Tema.text
+            text: pa.queued
+                ? (pa.c.queue_pos > 0 ? qsTr("Sıradasın (%1.)").arg(pa.c.queue_pos) : qsTr("Sıradasın"))
+                : (pa.c.queue_len > 0 ? qsTr("Sıraya gir (%1 kişi)").arg(pa.c.queue_len) : qsTr("Sıraya gir"))
+            onClicked: {
+                if (pa.queued)
+                    home.showConfirmDialog(qsTr("Sıradan çık"),
+                        qsTr("%1 için sıradan çıkılsın mı?").arg(pa.c.name),
+                        () => home.server.setQueue(pa.c.duid, false));
+                else
+                    home.server.setQueue(pa.c.duid, true);
+            }
+        }
+        // My own PS5: its name in Oviora (friends see it too)
+        TextButton {
+            compact: pa.compact
+            kind: "quiet"
+            visible: !!pa.c.mine
+            enabled: !home.server.busy
+            text: qsTr("Adını değiştir")
+            onClicked: home.showConsoleRename(pa.c.duid, pa.c.name)
+        }
+        TextButton {
+            visible: !pa.canQueue
+            compact: pa.compact
+            kind: pa.taken ? "secondary" : "primary"
+            enabled: !pa.taken && home.server.sessionState == "idle"
+            text: pa.taken ? qsTr("Dolu") : ((pa.c.turn > 0) ? qsTr("Bağlan (sıra sende)") : qsTr("Bağlan"))
+            onClicked: {
+                const h = pa.c.host;
+                const d = pa.c.duid;
+                home.connectionStarted(() => home.server.connectTo(h, d));
+                home.server.connectTo(h, d);
+            }
+        }
+    }
+
+    // A PS5 on one PSN account: the plain console row
+    component PsnRow: ConsoleRow {
+        id: pr
+        property var c: ({})
+        readonly property bool here: home.server.sessionDuid == c.duid
+        readonly property bool taken: (c.busy || "").length > 0
+        tone: taken && !here ? Tema.warm : Tema.ok
+        name: c.name || ""
+        nameNote: home.psnOf(c)
+        stateText: home.psnStateLine(c, home.psnStateWord(c), c.app)
+        PsnActions { c: pr.c }
+    }
+
+    // One physical PS5 on several PSN accounts (a row each): the PS5 once, with the state its rows share
+    // (busy is per PS5), and under it a compact line per row: its name, its PSN account, its actions
+    component Ps5Card: Item {
+        id: pc
+        property var rows: []
+        readonly property var first: rows.length ? rows[0] : ({})
+        // The row this PC is connected over, else the first: the state line follows it
+        readonly property var lead: {
+            for (const c of rows)
+                if (home.server.sessionDuid == c.duid)
+                    return c;
+            return first;
+        }
+        readonly property bool here: home.server.sessionDuid == lead.duid
+        readonly property bool taken: (lead.busy || "").length > 0
+        readonly property var app: {
+            for (const c of rows)
+                if (c.app && c.app.name)
+                    return c.app;
+            return null;
+        }
+        // The session on my PS5 (the same on all its rows): one "Çıkar" for the card
+        readonly property var live: {
+            if (!first.mine || !taken)
+                return null;
+            for (const c of rows) {
+                const m = home.myConsole(c.duid);
+                if (m && m.sid && m.sid.length > 0)
+                    return m;
+            }
+            return null;
+        }
+        Layout.fillWidth: true
+        implicitHeight: pcHead.height + pcSubs.implicitHeight + 12
+
+        Item {
+            id: pcHead
+            anchors {
+                left: parent.left
+                right: parent.right
+                top: parent.top
+            }
+            height: 70
+            KonsolSimge {
+                id: pcGlyph
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.verticalCenterOffset: 4
+                width: 64
+                height: 18
+                tone: pc.taken && !pc.here ? Tema.warm : Tema.ok
+            }
+            ColumnLayout {
+                anchors {
+                    left: pcGlyph.right
+                    right: pcHeadActions.left
+                    verticalCenter: parent.verticalCenter
+                    verticalCenterOffset: 4
+                    leftMargin: 18
+                    rightMargin: 16
+                }
+                spacing: 3
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Label {
+                        textFormat: Text.PlainText
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: implicitWidth
+                        Layout.minimumWidth: Math.min(implicitWidth, 80)
+                        Layout.alignment: Qt.AlignBaseline
+                        text: home.ps5Title(pc.rows)
+                        elide: Text.ElideRight
+                        font.family: Tema.body
+                        font.pixelSize: 18
+                        font.weight: Font.DemiBold
+                        color: Tema.text
+                    }
+                    Label {
+                        textFormat: Text.PlainText
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignBaseline
+                        text: qsTr("%1 PSN hesabı").arg(pc.rows.length)
+                        elide: Text.ElideRight
+                        font.family: Tema.body
+                        font.pixelSize: 12
+                        color: Tema.faint
+                    }
+                }
+                StateLine {
+                    Layout.fillWidth: true
+                    tone: pc.taken && !pc.here ? Tema.warm : Tema.ok
+                    text: home.psnStateLine(pc.lead, home.psnStateWord(pc.lead), pc.app)
+                }
+            }
+            RowLayout {
+                id: pcHeadActions
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.verticalCenterOffset: 4
+                spacing: 8
+                // Someone else on my PS5: I can always take it back
+                TextButton {
+                    visible: !!pc.live
+                    kind: "quiet"
+                    tone: Tema.warm
+                    text: qsTr("Çıkar")
+                    onClicked: home.showConfirmDialog(qsTr("Çıkar"),
+                        qsTr("%1 oturumu birkaç saniye içinde kapanır ve sen tekrar açana kadar bu PS5'e bağlanamaz.").arg(pc.lead.busy),
+                        () => home.server.kick(pc.live.sid))
+                }
+            }
+        }
+        ColumnLayout {
+            id: pcSubs
+            anchors {
+                left: parent.left
+                right: parent.right
+                top: pcHead.bottom
+                leftMargin: 82
+            }
+            spacing: 0
+            Repeater {
+                model: pc.rows
+                delegate: Item {
+                    id: sub
+                    required property var modelData
+                    readonly property string psn: home.psnOf(modelData)
+                    readonly property bool here: home.server.sessionDuid == modelData.duid
+                    Layout.fillWidth: true
+                    implicitHeight: 44
+                    Rectangle {
+                        anchors {
+                            left: parent.left
+                            right: parent.right
+                            top: parent.top
+                        }
+                        height: 1
+                        color: Tema.line
+                        opacity: 0.7
+                    }
+                    RowLayout {
+                        anchors {
+                            left: parent.left
+                            right: parent.right
+                            verticalCenter: parent.verticalCenter
+                        }
+                        spacing: 10
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: implicitWidth
+                            Layout.minimumWidth: Math.min(implicitWidth, 60)
+                            Layout.alignment: Qt.AlignBaseline
+                            text: sub.modelData.name
+                            elide: Text.ElideRight
+                            font.family: Tema.body
+                            font.pixelSize: 15
+                            font.weight: Font.Medium
+                            color: Tema.text
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            visible: sub.psn.length > 0
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: implicitWidth
+                            Layout.minimumWidth: Math.min(implicitWidth, 40)
+                            Layout.alignment: Qt.AlignBaseline
+                            text: sub.psn
+                            elide: Text.ElideRight
+                            font.family: Tema.body
+                            font.pixelSize: 12
+                            color: Tema.faint
+                        }
+                        // The row this PC is connected over
+                        Label {
+                            textFormat: Text.PlainText
+                            visible: sub.here
+                            Layout.alignment: Qt.AlignBaseline
+                            text: home.psnStateWord(sub.modelData)
+                            font.family: Tema.body
+                            font.pixelSize: 12
+                            color: Tema.ok
+                        }
+                        Item { Layout.fillWidth: true }
+                        PsnActions {
+                            c: sub.modelData
+                            compact: true
+                            kick: false
+                        }
+                    }
+                }
+            }
+        }
+        // Parted from the rows around it by a hairline, as a plain row
+        Rectangle {
+            anchors {
+                left: parent.left
+                right: parent.right
+                top: parent.top
+            }
+            height: 1
+            color: Tema.line
+        }
+    }
+
     // A plain sentence where a list is empty
     component EmptyNote: Label {
         Layout.fillWidth: true
@@ -350,6 +787,152 @@ Pane {
         font.pixelSize: 15
         lineHeight: 1.3
         color: Tema.muted
+    }
+
+    // ── "Canlı yayınlar": friends' and group members' broadcasts on the air (izlet.live). "İzle" plays one in this
+    // app's own player, the way a PS5 plays (izlet.watch: no browser) ──
+    property bool liveOpen: false
+    function openLive() {
+        liveOpen = true
+        izlet.refreshLive()
+    }
+    function closeLive() { liveOpen = false }
+    Rectangle {
+        id: livePage
+        visible: home.liveOpen
+        z: 50
+        color: Tema.bg
+        anchors {
+            top: topBar.bottom
+            left: parent.left
+            right: parent.right
+            bottom: parent.bottom
+            topMargin: 18
+        }
+        // The list stays fresh while the page is open
+        Timer {
+            interval: 5000
+            repeat: true
+            running: home.liveOpen
+            onTriggered: izlet.refreshLive()
+        }
+        Shortcut {
+            sequence: "Escape"
+            enabled: home.liveOpen
+            onActivated: home.closeLive()
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 56
+            anchors.rightMargin: 40
+            anchors.bottomMargin: 24
+            spacing: 14
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 14
+                TextButton {
+                    kind: "secondary"
+                    compact: true
+                    text: qsTr("‹ Geri")
+                    onClicked: home.closeLive()
+                }
+                Label {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    text: qsTr("Canlı yayınlar")
+                    font.family: Tema.display
+                    font.pixelSize: 26
+                    font.weight: Font.DemiBold
+                    color: Tema.text
+                }
+            }
+            Label {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                Layout.maximumWidth: 760
+                wrapMode: Text.WordWrap
+                text: qsTr("Arkadaşların ve grup üyelerin oynarken \"İzlet\"i açarsa burada görünür. İzlediğin yayın, PS5 oynar gibi bu uygulamanın oynatıcısında açılır.")
+                font.family: Tema.body
+                font.pixelSize: 15
+                lineHeight: 1.3
+                color: Tema.muted
+            }
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.maximumWidth: 900
+                contentWidth: availableWidth
+                clip: true
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 0
+                    EmptyNote {
+                        visible: izlet.live.length === 0
+                        text: qsTr("Şu an açık yayın yok.")
+                    }
+                    Repeater {
+                        model: izlet.live
+                        delegate: Rectangle {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            implicitHeight: 74
+                            color: "transparent"
+                            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Tema.line }
+                            RowLayout {
+                                anchors.fill: parent
+                                spacing: 14
+                                Rectangle {
+                                    radius: 4
+                                    color: Tema.danger
+                                    implicitWidth: pageLiveTag.implicitWidth + 12
+                                    implicitHeight: pageLiveTag.implicitHeight + 4
+                                    Label {
+                                        id: pageLiveTag
+                                        anchors.centerIn: parent
+                                        textFormat: Text.PlainText
+                                        text: qsTr("CANLI")
+                                        font.family: Tema.body
+                                        font.pixelSize: 12
+                                        font.weight: Font.Bold
+                                        color: "white"
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Label {
+                                        textFormat: Text.PlainText
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                        text: home.streamerMode ? qsTr("Bir arkadaşın") : modelData.owner
+                                        font.family: Tema.body
+                                        font.pixelSize: 18
+                                        font.weight: Font.DemiBold
+                                        color: Tema.text
+                                    }
+                                    Label {
+                                        textFormat: Text.PlainText
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                        text: (home.streamerMode ? "PS5" : modelData.console) + " · " + qsTr("%1 izleyici").arg(modelData.viewers)
+                                            + (modelData.codec === "h265" ? " · H.265" : "")
+                                        font.family: Tema.body
+                                        font.pixelSize: 14
+                                        color: Tema.muted
+                                    }
+                                }
+                                TextButton {
+                                    kind: "primary"
+                                    enabled: izlet.canWatch && !oviora.hasSource
+                                    text: qsTr("İzle")
+                                    onClicked: { home.closeLive(); izlet.watch(modelData.yid) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ── Top bar ──────────────────────────────────────────────────────────
@@ -380,6 +963,14 @@ Pane {
             color: Tema.text
         }
         Item { Layout.fillWidth: true }
+        // Friends' live broadcasts, watched on a page of this window (a dot while someone is on the air)
+        TextButton {
+            visible: home.signedIn && izlet.canWatch
+            kind: "quiet"
+            text: izlet.live.length > 0 ? qsTr("● Canlı yayınlar (%1)").arg(izlet.live.length) : qsTr("Canlı yayınlar")
+            tone: izlet.live.length > 0 ? Tema.danger : Tema.muted
+            onClicked: home.liveOpen ? home.closeLive() : home.openLive()
+        }
         // Notifications: recent events, a count of the unseen ones
         TextButton {
             id: bellButton
@@ -691,11 +1282,24 @@ Pane {
         chatLoader.active = true;
         if (chatLoader.item) chatLoader.item.popup.open();
     }
-    // Testing: --test-chat <friend> opens that conversation (only opens it)
+    // A group's conversation in the same window (the group's page closes first)
+    function openGroupChat(id) {
+        if (groupLoader.item) groupLoader.item.popup.close();
+        msgs.openGroupChat(id);
+        chatLoader.active = true;
+        if (chatLoader.item) chatLoader.item.popup.open();
+    }
+    // Testing: --test-chat <friend> opens that conversation, #<id> a group's (only opens it);
+    // --dialog group / groupcreate: the first group's page, the "Grup kur" window
     Timer {
         interval: 9000
-        running: typeof vyTest !== "undefined" && !!vyTest.chat
-        onTriggered: home.openChat(vyTest.chat)
+        running: typeof vyTest !== "undefined" && (!!vyTest.chat || vyTest.dialog === "group" || vyTest.dialog === "groupcreate")
+        onTriggered: {
+            if (vyTest.dialog === "group" && home.server.groups.length > 0) home.openGroup(home.server.groups[0].id);
+            else if (vyTest.dialog === "groupcreate") home.openGroupCreate();
+            else if (String(vyTest.chat).indexOf("#") === 0) home.openGroupChat(parseInt(String(vyTest.chat).substring(1)));
+            else if (vyTest.chat) home.openChat(vyTest.chat);
+        }
     }
     Loader {
         id: chatLoader
@@ -718,7 +1322,7 @@ Pane {
             showCode = false;
             msgs.openChat("");
         }
-        onOpened: chatField.forceActiveFocus()
+        onOpened: chatView.focusField()
         background: Rectangle {
             radius: Tema.radiusPanel
             color: Tema.surface
@@ -731,15 +1335,23 @@ Pane {
                 Label {
                     textFormat: Text.PlainText
                     Layout.fillWidth: true
-                    text: msgs.chatWith
+                    text: msgs.chatTitle
                     elide: Text.ElideRight
                     font.family: Tema.display
                     font.pixelSize: 26
                     font.weight: Font.ExtraBold
                     color: Tema.text
                 }
+                // A group: its members and tools; the safety code is compared in each member's own chat
                 TextButton {
                     kind: "quiet"
+                    visible: msgs.chatIsGroup
+                    text: qsTr("Üyeler")
+                    onClicked: home.openGroup(msgs.chatGroup)
+                }
+                TextButton {
+                    kind: "quiet"
+                    visible: !msgs.chatIsGroup
                     text: chatPopup.showCode ? qsTr("Mesajlar") : qsTr("Güvenlik kodu")
                     onClicked: chatPopup.showCode = !chatPopup.showCode
                 }
@@ -753,7 +1365,9 @@ Pane {
                 textFormat: Text.PlainText
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                text: qsTr("Uçtan uca şifreli: mesajları yalnız sen ve %1 okuyabilir, Oviora sunucusu bile göremez.").arg(msgs.chatWith)
+                text: msgs.chatIsGroup
+                    ? qsTr("Uçtan uca şifreli: mesajları yalnız grubun üyeleri okuyabilir, Oviora sunucusu bile göremez.")
+                    : qsTr("Uçtan uca şifreli: mesajları yalnız sen ve %1 okuyabilir, Oviora sunucusu bile göremez.").arg(msgs.chatWith)
                 font.family: Tema.body
                 font.pixelSize: 13
                 color: Tema.faint
@@ -772,7 +1386,9 @@ Pane {
                     anchors.fill: parent
                     anchors.margins: 10
                     wrapMode: Text.WordWrap
-                    text: qsTr("%1 için güvenlik anahtarı değişti. Yeni bir cihaz kurmuş olabilir; emin olmak için güvenlik kodunu onunla karşılaştır.").arg(msgs.chatWith)
+                    text: msgs.chatIsGroup
+                        ? qsTr("Grupta %1 için güvenlik anahtarı değişti. Yeni bir cihaz kurmuş olabilir; emin olmak için güvenlik kodunu onunla birebir sohbetinizde karşılaştır.").arg(msgs.chatKeyChangedNames.join(", "))
+                        : qsTr("%1 için güvenlik anahtarı değişti. Yeni bir cihaz kurmuş olabilir; emin olmak için güvenlik kodunu onunla karşılaştır.").arg(msgs.chatWith)
                     font.family: Tema.body
                     font.pixelSize: 13
                     color: Tema.warm
@@ -817,88 +1433,12 @@ Pane {
                 }
                 Item { Layout.fillHeight: true }
             }
-            ListView {
-                id: chatList
+            // The bubbles and the line to write in (shared with the stream menu's panel)
+            ChatView {
+                id: chatView
                 visible: !chatPopup.showCode
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                clip: true
-                spacing: 6
-                model: msgs.chat
-                onCountChanged: positionViewAtEnd()
-                delegate: Item {
-                    required property var modelData
-                    width: ListView.view.width
-                    implicitHeight: bubble.height
-                    Rectangle {
-                        id: bubble
-                        anchors.right: modelData.mine ? parent.right : undefined
-                        anchors.left: modelData.mine ? undefined : parent.left
-                        width: Math.min(parent.width * 0.78, bubbleText.implicitWidth + 24)
-                        height: bubbleText.implicitHeight + bubbleTime.implicitHeight + 18
-                        radius: 12
-                        color: modelData.mine ? Tema.accent : Tema.surface2
-                        Label {
-                            textFormat: Text.PlainText
-                            id: bubbleText
-                            x: 12
-                            y: 8
-                            width: Math.min(chatList.width * 0.78 - 24, implicitWidth)
-                            wrapMode: Text.Wrap
-                            text: modelData.text
-                            font.family: Tema.body
-                            font.pixelSize: 15
-                            color: modelData.mine ? Tema.inkOnAccent : (modelData.failed ? Tema.warm : Tema.text)
-                        }
-                        Label {
-                            textFormat: Text.PlainText
-                            id: bubbleTime
-                            anchors.right: parent.right
-                            anchors.rightMargin: 10
-                            anchors.top: bubbleText.bottom
-                            text: modelData.failed && modelData.mine ? qsTr("gönderilemedi")
-                                : modelData.sending ? qsTr("gönderiliyor…") : Qt.formatDateTime(new Date(modelData.at), "HH:mm")
-                            font.family: Tema.body
-                            font.pixelSize: 11
-                            color: modelData.mine ? Tema.inkOnAccent : Tema.faint
-                            opacity: 0.8
-                        }
-                    }
-                }
-                Label {
-                    textFormat: Text.PlainText
-                    anchors.centerIn: parent
-                    visible: chatList.count === 0
-                    text: qsTr("Henüz mesaj yok. İlk mesajı sen yaz.")
-                    font.family: Tema.body
-                    font.pixelSize: 15
-                    color: Tema.muted
-                }
-            }
-            RowLayout {
-                visible: !chatPopup.showCode
-                Layout.fillWidth: true
-                spacing: 8
-                Field {
-                    id: chatField
-                    placeholderText: msgs.ready ? qsTr("Mesaj yaz") : qsTr("Mesajlaşma hazırlanıyor…")
-                    enabled: msgs.ready
-                    maximumLength: 2000
-                    font.pixelSize: 15
-                    topPadding: 10
-                    bottomPadding: 10
-                    onAccepted: sendButton.clicked()
-                }
-                TextButton {
-                    id: sendButton
-                    kind: "primary"
-                    text: qsTr("Gönder")
-                    enabled: msgs.ready && chatField.text.trim().length > 0
-                    onClicked: {
-                        msgs.send(chatField.text);
-                        chatField.text = "";
-                    }
-                }
             }
         }
     }
@@ -907,8 +1447,496 @@ Pane {
     }
     Connections {
         target: msgs
-        function onIncoming(from, preview) { home.showToast(qsTr("%1 mesaj gönderdi").arg(from), preview); }
+        // Over a stream the main window shows its own card on the picture (Main.qml messageToast)
+        function onIncoming(from, preview, group, groupName) {
+            if (home.streamShown) return;
+            home.showToast(group ? groupName + " · " + from : qsTr("%1 mesaj gönderdi").arg(from), preview);
+        }
         function onFailed(text) { home.showToast(qsTr("Mesaj gönderilemedi"), text); }
+    }
+
+    // ── A friend group's page: the members and what they do now; the owner renames, adds, removes and
+    // deletes; anyone can leave. Everything it shows comes from OvioraServer.groups ──
+    property int groupPageId: 0
+    function openGroup(id) {
+        groupPageId = id;
+        groupLoader.active = true;
+        if (groupLoader.item) groupLoader.item.popup.open();
+    }
+    function openGroupCreate() {
+        groupCreateLoader.active = true;
+        if (groupCreateLoader.item) groupCreateLoader.item.popup.start();
+    }
+    Connections {
+        target: home.server
+        // A group I just set up: straight to its page
+        function onGroupCreated(id) { if (id) home.openGroup(id); }
+    }
+    Loader {
+        id: groupLoader
+        active: false
+        sourceComponent: Component {
+            Item {
+                property alias popup: groupPopup
+                Popup {
+                    id: groupPopup
+                    parent: Overlay.overlay
+                    x: Math.round((home.Window.width - width) / 2)
+                    y: Math.round((home.Window.height - height) / 2)
+                    width: Math.min(560, home.width - 64)
+                    height: Math.min(implicitHeight, home.Window.height - 64)
+                    modal: true
+                    dim: true
+                    padding: 24
+                    // Read again with every new groups view
+                    readonly property var group: { home.server.groups; return home.server.group(home.groupPageId); }
+                    readonly property var members: group.members || []
+                    readonly property bool mine: !!group.mine
+                    readonly property bool full: members.length >= home.server.groupMembersMax
+                    // "": the members; "rename": the new name; "add": friends to add
+                    property string mode: ""
+                    // My friends who are not in the group yet
+                    readonly property var candidates: {
+                        const inGroup = members.map(m => (m.name || "").toLowerCase());
+                        return (home.server.friends || []).filter(f => f && f.name && inGroup.indexOf(f.name.toLowerCase()) < 0);
+                    }
+                    onClosed: mode = ""
+                    // Left, deleted or removed from it: nothing left to show
+                    onGroupChanged: if (opened && group.id === undefined) close()
+                    background: Rectangle {
+                        radius: Tema.radiusPanel
+                        color: Tema.surface
+                        border.color: Tema.lineStrong
+                    }
+                    contentItem: ColumnLayout {
+                        spacing: 10
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label {
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                text: groupPopup.group.name || ""
+                                elide: Text.ElideRight
+                                font.family: Tema.display
+                                font.pixelSize: 26
+                                font.weight: Font.ExtraBold
+                                color: Tema.text
+                            }
+                            TextButton {
+                                kind: "quiet"
+                                text: qsTr("Kapat")
+                                onClicked: groupPopup.close()
+                            }
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: (groupPopup.mine ? qsTr("Grubu sen yönetiyorsun") : qsTr("Yönetici: %1").arg(groupPopup.group.owner || ""))
+                                + " · " + qsTr("%1/%2 kişi").arg(groupPopup.members.length).arg(home.server.groupMembersMax)
+                            font.family: Tema.body
+                            font.pixelSize: 13
+                            color: Tema.faint
+                        }
+                        // The owner's tools
+                        RowLayout {
+                            visible: groupPopup.mine && groupPopup.mode === ""
+                            spacing: 4
+                            Layout.leftMargin: -10
+                            TextButton {
+                                kind: "quiet"
+                                tone: Tema.accentText
+                                implicitHeight: 32
+                                text: qsTr("Yeniden adlandır")
+                                onClicked: {
+                                    renameField.text = groupPopup.group.name || "";
+                                    groupPopup.mode = "rename";
+                                    renameField.forceActiveFocus();
+                                }
+                            }
+                            TextButton {
+                                kind: "quiet"
+                                tone: Tema.accentText
+                                implicitHeight: 32
+                                enabled: !groupPopup.full
+                                text: qsTr("Üye ekle")
+                                onClicked: groupPopup.mode = "add"
+                            }
+                        }
+                        // A new name
+                        RowLayout {
+                            visible: groupPopup.mode === "rename"
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Field {
+                                id: renameField
+                                placeholderText: qsTr("Grubun adı")
+                                maximumLength: 40
+                                font.pixelSize: 15
+                                topPadding: 9
+                                bottomPadding: 9
+                                leftPadding: 14
+                                onAccepted: renameSave.clicked()
+                            }
+                            TextButton {
+                                id: renameSave
+                                kind: "primary"
+                                text: qsTr("Değiştir")
+                                enabled: renameField.text.trim().length > 0
+                                onClicked: {
+                                    if (!enabled) return;
+                                    home.server.groupRename(groupPopup.group.id, renameField.text);
+                                    groupPopup.mode = "";
+                                }
+                            }
+                            TextButton { kind: "quiet"; text: qsTr("Vazgeç"); onClicked: groupPopup.mode = "" }
+                        }
+                        // Friends to add (only the owner's own friends can be added)
+                        ColumnLayout {
+                            visible: groupPopup.mode === "add"
+                            Layout.fillWidth: true
+                            spacing: 4
+                            RowLayout {
+                                Layout.fillWidth: true
+                                SectionLabel { text: qsTr("Eklenecek arkadaş") }
+                                Item { Layout.fillWidth: true }
+                                TextButton { kind: "quiet"; implicitHeight: 32; text: qsTr("Bitti"); onClicked: groupPopup.mode = "" }
+                            }
+                            EmptyNote {
+                                visible: groupPopup.candidates.length === 0
+                                text: qsTr("Bütün arkadaşların zaten bu grupta.")
+                            }
+                            Repeater {
+                                model: groupPopup.candidates
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 12
+                                    Label {
+                                        textFormat: Text.PlainText
+                                        Layout.fillWidth: true
+                                        text: modelData.name
+                                        elide: Text.ElideRight
+                                        font.family: Tema.body
+                                        font.pixelSize: 15
+                                        font.weight: Font.DemiBold
+                                        color: Tema.text
+                                    }
+                                    TextButton {
+                                        kind: "quiet"
+                                        tone: Tema.accentText
+                                        implicitHeight: 32
+                                        enabled: !groupPopup.full
+                                        text: qsTr("Ekle")
+                                        onClicked: home.server.groupAdd(groupPopup.group.id, modelData.name)
+                                    }
+                                }
+                            }
+                        }
+                        // The members, in the order they joined
+                        ListView {
+                            id: memberList
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.preferredHeight: Math.min(contentHeight, 340)
+                            Layout.topMargin: 4
+                            clip: true
+                            spacing: 0
+                            model: groupPopup.members
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: memberList.contentHeight > memberList.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+                            delegate: Item {
+                                id: memberRow
+                                required property var modelData
+                                width: ListView.view.width
+                                implicitHeight: 60
+                                Rectangle {
+                                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                                    height: 1
+                                    color: Tema.line
+                                }
+                                RowLayout {
+                                    anchors.fill: parent
+                                    spacing: 12
+                                    Rectangle {
+                                        implicitWidth: 30
+                                        implicitHeight: 30
+                                        radius: 15
+                                        color: Tema.surface2
+                                        border.color: Tema.line
+                                        Label {
+                                            textFormat: Text.PlainText
+                                            anchors.centerIn: parent
+                                            text: home.initials(memberRow.modelData.name)
+                                            font.family: Tema.body
+                                            font.pixelSize: 11
+                                            font.weight: Font.DemiBold
+                                            color: Tema.text
+                                        }
+                                        Rectangle {
+                                            anchors.right: parent.right
+                                            anchors.bottom: parent.bottom
+                                            anchors.margins: -1
+                                            width: 10
+                                            height: 10
+                                            radius: 5
+                                            color: home.presenceOn(memberRow.modelData.presence) ? Tema.ok : Tema.faint
+                                            border.width: 2
+                                            border.color: Tema.surface
+                                        }
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 1
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+                                            Label {
+                                                textFormat: Text.PlainText
+                                                Layout.maximumWidth: memberRow.width - 200
+                                                text: memberRow.modelData.me ? qsTr("%1 (sen)").arg(memberRow.modelData.name) : memberRow.modelData.name
+                                                elide: Text.ElideRight
+                                                font.family: Tema.body
+                                                font.pixelSize: 15
+                                                font.weight: Font.DemiBold
+                                                color: Tema.text
+                                            }
+                                            Label {
+                                                id: roleTag
+                                                textFormat: Text.PlainText
+                                                visible: memberRow.modelData.role === "owner"
+                                                text: qsTr("yönetici")
+                                                font.family: Tema.body
+                                                font.pixelSize: 12
+                                                font.weight: Font.DemiBold
+                                                color: Tema.accentText
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                        }
+                                        Label {
+                                            textFormat: Text.PlainText
+                                            Layout.fillWidth: true
+                                            text: home.presenceLine(memberRow.modelData.presence)
+                                            elide: Text.ElideRight
+                                            font.family: Tema.body
+                                            font.pixelSize: 13
+                                            color: home.presencePlaying(memberRow.modelData.presence) ? Tema.ok : Tema.muted
+                                        }
+                                    }
+                                    TextButton {
+                                        visible: groupPopup.mine && !memberRow.modelData.me
+                                        kind: "quiet"
+                                        implicitHeight: 32
+                                        text: qsTr("Çıkar")
+                                        onClicked: home.showConfirmDialog(qsTr("Gruptan çıkar"),
+                                            qsTr("%1, %2 grubundan çıkarılsın mı?").arg(memberRow.modelData.name).arg(groupPopup.group.name),
+                                            () => home.server.groupRemove(groupPopup.group.id, memberRow.modelData.name))
+                                    }
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 6
+                            spacing: 8
+                            TextButton {
+                                kind: "primary"
+                                text: home.groupUnreadOf(groupPopup.group.id) > 0
+                                    ? qsTr("Mesaj (%1)").arg(home.groupUnreadOf(groupPopup.group.id)) : qsTr("Mesaj yaz")
+                                onClicked: home.openGroupChat(groupPopup.group.id)
+                            }
+                            Item { Layout.fillWidth: true }
+                            TextButton {
+                                visible: groupPopup.mine
+                                kind: "quiet"
+                                tone: Tema.danger
+                                text: qsTr("Grubu sil")
+                                onClicked: home.showConfirmDialog(qsTr("Grubu sil"),
+                                    qsTr("%1 grubu herkes için silinsin mi? Gruba gönderilen ve henüz alınmamış mesajlar da silinir.").arg(groupPopup.group.name),
+                                    () => home.server.groupDelete(groupPopup.group.id))
+                            }
+                            TextButton {
+                                kind: "quiet"
+                                text: qsTr("Gruptan ayrıl")
+                                onClicked: home.showConfirmDialog(qsTr("Gruptan ayrıl"),
+                                    groupPopup.mine && groupPopup.members.length > 1
+                                        ? qsTr("%1 grubundan ayrılmak istiyor musun? Yönetim, gruba en önce katılmış üyeye geçer.").arg(groupPopup.group.name)
+                                        : qsTr("%1 grubundan ayrılmak istiyor musun? Grubun mesajları artık sana gelmez.").arg(groupPopup.group.name),
+                                    () => home.server.groupRemove(groupPopup.group.id, home.server.user))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── "Grup kur": a name and the friends to add ──
+    Loader {
+        id: groupCreateLoader
+        active: false
+        sourceComponent: Component {
+            Item {
+                property alias popup: groupCreatePopup
+                Popup {
+                    id: groupCreatePopup
+                    parent: Overlay.overlay
+                    x: Math.round((home.Window.width - width) / 2)
+                    y: Math.round((home.Window.height - height) / 2)
+                    width: Math.min(500, home.width - 64)
+                    height: Math.min(implicitHeight, home.Window.height - 64)
+                    modal: true
+                    dim: true
+                    padding: 24
+                    // The friends ticked, by name
+                    property var picked: []
+                    readonly property var friends: home.server.friends || []
+                    function start() {
+                        groupNameField.text = "";
+                        picked = [];
+                        open();
+                        groupNameField.forceActiveFocus();
+                    }
+                    function toggle(name, on) {
+                        picked = on ? picked.concat([name]) : picked.filter(n => n !== name);
+                    }
+                    readonly property bool tooMany: picked.length + 1 > home.server.groupMembersMax
+                    background: Rectangle {
+                        radius: Tema.radiusPanel
+                        color: Tema.surface
+                        border.color: Tema.lineStrong
+                    }
+                    contentItem: ColumnLayout {
+                        spacing: 12
+                        Label {
+                            textFormat: Text.PlainText
+                            text: qsTr("Grup kur")
+                            font.family: Tema.display
+                            font.pixelSize: 26
+                            font.weight: Font.ExtraBold
+                            color: Tema.text
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: qsTr("Gruba bir ad ver ve eklemek istediğin arkadaşlarını seç. Grubu sen yönetirsin; sonradan da üye ekleyebilirsin.")
+                            font.family: Tema.body
+                            font.pixelSize: 14
+                            lineHeight: 1.2
+                            color: Tema.muted
+                        }
+                        Field {
+                            id: groupNameField
+                            placeholderText: qsTr("Grubun adı")
+                            maximumLength: 40
+                            font.pixelSize: 15
+                            topPadding: 10
+                            bottomPadding: 10
+                            leftPadding: 14
+                        }
+                        SectionLabel {
+                            Layout.topMargin: 4
+                            text: qsTr("Arkadaşlar")
+                        }
+                        EmptyNote {
+                            visible: groupCreatePopup.friends.length === 0
+                            Layout.topMargin: 0
+                            text: qsTr("Henüz arkadaşın yok. Grubu yalnız kurup arkadaş ekledikçe onları da ekleyebilirsin.")
+                        }
+                        ListView {
+                            id: pickList
+                            visible: count > 0
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.preferredHeight: Math.min(contentHeight, 300)
+                            clip: true
+                            model: groupCreatePopup.friends
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: pickList.contentHeight > pickList.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+                            delegate: AbstractButton {
+                                id: pickRow
+                                required property var modelData
+                                readonly property bool on: groupCreatePopup.picked.indexOf(modelData.name) >= 0
+                                width: ListView.view.width
+                                implicitHeight: 44
+                                focusPolicy: Qt.NoFocus
+                                hoverEnabled: true
+                                onClicked: groupCreatePopup.toggle(modelData.name, !on)
+                                background: Rectangle {
+                                    radius: 10
+                                    color: pickRow.down ? Tema.line : (pickRow.hovered ? Tema.surface2 : "transparent")
+                                }
+                                contentItem: RowLayout {
+                                    spacing: 12
+                                    Item { implicitWidth: 2 }
+                                    // A tick box in the brand colour
+                                    Rectangle {
+                                        implicitWidth: 20
+                                        implicitHeight: 20
+                                        radius: 6
+                                        color: pickRow.on ? Tema.accent : "transparent"
+                                        border.color: pickRow.on ? Tema.accent : Tema.lineStrong
+                                        border.width: 1.5
+                                        Rectangle {
+                                            visible: pickRow.on
+                                            anchors.centerIn: parent
+                                            width: 8
+                                            height: 8
+                                            radius: 2
+                                            color: Tema.inkOnAccent
+                                        }
+                                    }
+                                    Label {
+                                        textFormat: Text.PlainText
+                                        text: pickRow.modelData.name
+                                        elide: Text.ElideRight
+                                        font.family: Tema.body
+                                        font.pixelSize: 15
+                                        font.weight: Font.DemiBold
+                                        color: Tema.text
+                                    }
+                                    Label {
+                                        textFormat: Text.PlainText
+                                        Layout.fillWidth: true
+                                        text: home.presenceLine(pickRow.modelData.presence)
+                                        elide: Text.ElideRight
+                                        font.family: Tema.body
+                                        font.pixelSize: 13
+                                        color: Tema.faint
+                                    }
+                                }
+                            }
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: groupCreatePopup.tooMany
+                                ? qsTr("Bir grupta en çok %1 kişi olabilir (sen dahil).").arg(home.server.groupMembersMax)
+                                : qsTr("%1 arkadaş seçildi").arg(groupCreatePopup.picked.length)
+                            font.family: Tema.body
+                            font.pixelSize: 13
+                            color: groupCreatePopup.tooMany ? Tema.danger : Tema.faint
+                        }
+                        RowLayout {
+                            Layout.alignment: Qt.AlignRight
+                            spacing: 8
+                            TextButton { kind: "quiet"; text: qsTr("Vazgeç"); onClicked: groupCreatePopup.close() }
+                            TextButton {
+                                kind: "primary"
+                                text: qsTr("Kur")
+                                enabled: groupNameField.text.trim().length > 0 && !groupCreatePopup.tooMany
+                                onClicked: {
+                                    home.server.groupCreate(groupNameField.text, groupCreatePopup.picked);
+                                    groupCreatePopup.close();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ── Invite: my link and code as text and QR, and a friend's code ──
@@ -1311,11 +2339,14 @@ Pane {
 
         // PS5s to connect to
         ScrollView {
+            id: consoleScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.maximumWidth: 900
             contentWidth: availableWidth
             clip: true
+            // The scroll bar gets its own lane (it used to lie over the Bağlan buttons)
+            rightPadding: 14
 
             ColumnLayout {
                 width: parent.width
@@ -1343,6 +2374,71 @@ Pane {
                     color: Tema.muted
                 }
 
+                // ── Friends on the air (İzlet): watched in a window of its own (izlet.live, izlet.watch) ──
+                ColumnLayout {
+                    visible: izlet.live.length > 0
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: 26
+                    spacing: 8
+                    Connections {
+                        target: izlet
+                        function onWatchFailed(text) { home.showToast(qsTr("İzle"), text) }
+                    }
+                    SectionLabel {
+                        text: qsTr("Canlı yayınlar")
+                        info: qsTr("Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" yayını bu uygulamanın oynatıcısında açar.")
+                    }
+                    Repeater {
+                        model: izlet.live
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Layout.topMargin: 2
+                            spacing: 12
+                            Rectangle {
+                                radius: 4
+                                color: Tema.danger
+                                implicitWidth: liveTag.implicitWidth + 12
+                                implicitHeight: liveTag.implicitHeight + 4
+                                Label {
+                                    id: liveTag
+                                    anchors.centerIn: parent
+                                    textFormat: Text.PlainText
+                                    text: qsTr("CANLI")
+                                    font.family: Tema.body
+                                    font.pixelSize: 12
+                                    font.weight: Font.Bold
+                                    color: "white"
+                                }
+                            }
+                            Label {
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                text: home.streamerMode ? qsTr("Bir arkadaşın") : modelData.owner + " · " + modelData.console
+                                font.family: Tema.body
+                                font.pixelSize: 17
+                                font.weight: Font.DemiBold
+                                color: Tema.text
+                            }
+                            Label {
+                                textFormat: Text.PlainText
+                                text: qsTr("%1 izleyici").arg(modelData.viewers)
+                                font.family: Tema.body
+                                font.pixelSize: 14
+                                color: Tema.muted
+                            }
+                            TextButton {
+                                kind: "primary"
+                                compact: true
+                                enabled: izlet.canWatch
+                                text: qsTr("İzle")
+                                onClicked: izlet.watch(modelData.yid)
+                            }
+                        }
+                    }
+                }
+
                 // ── Over PSN: own PS5s and the ones friends opened, reachable from anywhere ──
                 RowLayout {
                     Layout.fillWidth: true
@@ -1352,6 +2448,13 @@ Pane {
                         info: qsTr("İnternet üzerinden bağlanır; PS5 evde, sen başka yerde olsan da olur.")
                     }
                     Item { Layout.fillWidth: true }
+                    TextButton {
+                        kind: "quiet"
+                        visible: home.server.psnLinks.length > 0 && home.server.psnLinks.length < home.server.psnLinksMax
+                        enabled: !home.server.busy
+                        text: qsTr("PSN hesabı ekle")
+                        onClicked: home.showPsnLinkDialog()
+                    }
                     TextButton {
                         kind: "quiet"
                         visible: home.server.psnLinked
@@ -1401,73 +2504,22 @@ Pane {
                     text: qsTr("PSN hesabında PS5 bulunamadı. PS5'te Ayarlar → Sistem → Uzaktan Oynatma açık olmalı; sonra \"PS5 listemi yenile\".")
                 }
 
+                // One entry per physical PS5 (home.ps5Groups): the plain row when it is on one PSN account,
+                // a PS5 card with a sub-row per account when on several
                 Repeater {
-                    model: home.server.available
-                    delegate: ConsoleRow {
-                        id: card
+                    model: home.ps5Groups(home.server.available)
+                    delegate: Loader {
+                        id: psnEntry
                         required property var modelData
-                        required property int index
-                        readonly property var mine: modelData.mine ? home.myConsole(modelData.duid) : null
-                        readonly property bool here: home.server.sessionDuid == modelData.duid
-                        readonly property bool taken: modelData.busy.length > 0
-                        tone: taken && !here ? Tema.warm : Tema.ok
-                        name: modelData.name
-                        stateText: {
-                            let state;
-                            if (card.here)
-                                state = home.server.sessionState == "asking" ? qsTr("bağlanılıyor…") : qsTr("bağlısın");
-                            else if (card.taken)
-                                state = qsTr("%1 oynuyor").arg(card.modelData.busy);
-                            else
-                                state = qsTr("boşta");
-                            const line = card.modelData.mine ? qsTr("Senin konsolun, %1").arg(state)
-                                                             : qsTr("%1 paylaşıyor, %2").arg(card.modelData.host).arg(state);
-                            // What the PS5 runs, as its owner's app last reported it (me.available[].app)
-                            const app = card.modelData.app;
-                            return app && app.name ? line + " · " + qsTr("Şu an açık: %1").arg(app.name) : line;
+                        Layout.fillWidth: true
+                        sourceComponent: modelData.rows.length > 1 ? ps5CardComponent : psnRowComponent
+                        Component {
+                            id: psnRowComponent
+                            PsnRow { c: psnEntry.modelData.rows[0] }
                         }
-
-                        // Someone else on my PS5: I can always take it back
-                        TextButton {
-                            visible: !!card.mine && card.taken && card.mine.sid.length > 0
-                            kind: "quiet"
-                            tone: Tema.warm
-                            text: qsTr("Çıkar")
-                            onClicked: home.showConfirmDialog(qsTr("Çıkar"),
-                                qsTr("%1 oturumu birkaç saniye içinde kapanır ve sen tekrar açana kadar bu PS5'e bağlanamaz.").arg(card.modelData.busy),
-                                () => home.server.kick(card.mine.sid))
-                        }
-                        // Someone plays on a friend's PS5: wait in line (servers without a queue: just "Dolu")
-                        readonly property bool canQueue: card.taken && !card.here && !card.modelData.mine
-                            && card.modelData.queued !== undefined
-                        readonly property bool queued: !!card.modelData.queued
-                        TextButton {
-                            visible: card.canQueue
-                            kind: card.queued ? "quiet" : "secondary"
-                            tone: card.queued ? Tema.accentText : Tema.text
-                            text: card.queued
-                                ? (card.modelData.queue_pos > 0 ? qsTr("Sıradasın (%1.)").arg(card.modelData.queue_pos) : qsTr("Sıradasın"))
-                                : (card.modelData.queue_len > 0 ? qsTr("Sıraya gir (%1 kişi)").arg(card.modelData.queue_len) : qsTr("Sıraya gir"))
-                            onClicked: {
-                                if (card.queued)
-                                    home.showConfirmDialog(qsTr("Sıradan çık"),
-                                        qsTr("%1 için sıradan çıkılsın mı?").arg(card.modelData.name),
-                                        () => home.server.setQueue(card.modelData.duid, false));
-                                else
-                                    home.server.setQueue(card.modelData.duid, true);
-                            }
-                        }
-                        TextButton {
-                            visible: !card.canQueue
-                            kind: card.taken ? "secondary" : "primary"
-                            enabled: !card.taken && home.server.sessionState == "idle"
-                            text: card.taken ? qsTr("Dolu") : ((card.modelData.turn > 0) ? qsTr("Bağlan (sıra sende)") : qsTr("Bağlan"))
-                            onClicked: {
-                                const h = card.modelData.host;
-                                const d = card.modelData.duid;
-                                home.connectionStarted(() => home.server.connectTo(h, d));
-                                home.server.connectTo(h, d);
-                            }
+                        Component {
+                            id: ps5CardComponent
+                            Ps5Card { rows: psnEntry.modelData.rows }
                         }
                     }
                 }
@@ -1585,18 +2637,117 @@ Pane {
 
         // Friends and sharing: a quiet column, no box
         ScrollView {
-            Layout.preferredWidth: 320
+            id: friendScroll
+            Layout.preferredWidth: 360
             Layout.fillHeight: true
             contentWidth: availableWidth
             clip: true
+            // The scroll bar gets its own lane on the right (it used to lie over the Kaldır buttons)
+            rightPadding: 14
 
             ColumnLayout {
                 width: parent.width
                 spacing: 0
 
+                // ── Friend groups: a row per group, its messages and its page (members, owner's tools) ──
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.topMargin: 14
+                    SectionLabel {
+                        text: qsTr("Gruplar")
+                        info: qsTr("Arkadaşlarınla bir grup kur; grupta herkes uçtan uca şifreli olarak birlikte yazışır. Grubu kuran kişi yönetir, herkes istediğinde ayrılabilir.")
+                    }
+                    Item { Layout.fillWidth: true }
+                    TextButton {
+                        kind: "quiet"
+                        text: qsTr("Grup kur")
+                        enabled: home.server.groups.length < home.server.groupsMax
+                        onClicked: home.openGroupCreate()
+                    }
+                }
+                EmptyNote {
+                    visible: home.server.groups.length == 0
+                    text: qsTr("Henüz bir grubun yok.")
+                }
+                Repeater {
+                    model: home.server.groups
+                    delegate: ColumnLayout {
+                        id: groupRow
+                        required property var modelData
+                        readonly property int unread: home.groupUnreadOf(modelData.id)
+                        Layout.fillWidth: true
+                        spacing: 0
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 8
+                            Layout.bottomMargin: 4
+                            spacing: 12
+                            // A rounded square, not a circle: a group, not a person
+                            Rectangle {
+                                implicitWidth: 30
+                                implicitHeight: 30
+                                radius: 9
+                                color: Tema.surface
+                                border.color: groupRow.modelData.playing > 0 ? Tema.ok : Tema.line
+                                Label {
+                                    textFormat: Text.PlainText
+                                    anchors.centerIn: parent
+                                    text: home.initials(groupRow.modelData.name)
+                                    font.family: Tema.body
+                                    font.pixelSize: 11
+                                    font.weight: Font.DemiBold
+                                    color: Tema.text
+                                }
+                            }
+                            // Name with the summary under it, beside the buttons (they used to overlap the summary)
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Label {
+                                    textFormat: Text.PlainText
+                                    Layout.fillWidth: true
+                                    text: groupRow.modelData.name
+                                    elide: Text.ElideRight
+                                    font.family: Tema.body
+                                    font.pixelSize: 16
+                                    font.weight: Font.DemiBold
+                                    color: Tema.text
+                                }
+                                Label {
+                                    textFormat: Text.PlainText
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: home.groupSummary(groupRow.modelData)
+                                    font.family: Tema.body
+                                    font.pixelSize: 13
+                                    color: groupRow.modelData.playing > 0 ? Tema.ok : Tema.muted
+                                }
+                            }
+                            TextButton {
+                                kind: groupRow.unread > 0 ? "primary" : "quiet"
+                                text: groupRow.unread > 0 ? qsTr("Mesaj (%1)").arg(groupRow.unread) : qsTr("Mesaj")
+                                implicitHeight: 32
+                                onClicked: home.openGroupChat(groupRow.modelData.id)
+                            }
+                            TextButton {
+                                kind: "quiet"
+                                text: qsTr("Üyeler")
+                                implicitHeight: 32
+                                onClicked: home.openGroup(groupRow.modelData.id)
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 10
+                            implicitHeight: 1
+                            color: Tema.line
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 26
                     SectionLabel {
                         text: qsTr("Arkadaşlar")
                         info: qsTr("Arkadaşının Oviora kullanıcı adını yaz ve ekle; o kabul edince birbirinize PS5'lerinizi açabilirsiniz.")
@@ -1677,16 +2828,15 @@ Pane {
                                     font.weight: Font.DemiBold
                                     color: Tema.text
                                 }
-                                // online: a small green light on the circle
+                                // playing or online: a green light on the circle, grey when offline
                                 Rectangle {
-                                    visible: friendRow.modelData.online
                                     anchors.right: parent.right
                                     anchors.bottom: parent.bottom
                                     anchors.margins: -1
                                     width: 10
                                     height: 10
                                     radius: 5
-                                    color: Tema.ok
+                                    color: home.presenceOn(friendRow.modelData.presence) ? Tema.ok : Tema.faint
                                     border.width: 2
                                     border.color: Tema.bg
                                 }
@@ -1700,13 +2850,6 @@ Pane {
                                 font.pixelSize: 16
                                 font.weight: Font.DemiBold
                                 color: Tema.text
-                            }
-                            Label {
-                                textFormat: Text.PlainText
-                                text: friendRow.modelData.online ? qsTr("çevrimiçi") : qsTr("çevrimdışı")
-                                font.family: Tema.body
-                                font.pixelSize: 13
-                                color: Tema.muted
                             }
                             // Oviora: end-to-end encrypted messages
                             TextButton {
@@ -1726,47 +2869,39 @@ Pane {
                                     () => home.server.removeFriend(friendRow.modelData.name))
                             }
                         }
-                        // Which of my PS5s this friend may use
-                        Repeater {
-                            model: home.server.consoles
-                            delegate: Basic.Switch {
-                                id: shareSwitch
-                                required property var modelData
+                        // What the friend does now: "Oynuyor: GTA VI · Ahmet'in PS5'inde · 25 dk", "Çevrimdışı · 2 sa önce"
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 42
+                            Layout.topMargin: 2
+                            Layout.bottomMargin: 4
+                            wrapMode: Text.WordWrap
+                            text: home.presenceLine(friendRow.modelData.presence)
+                            font.family: Tema.body
+                            font.pixelSize: 13
+                            color: home.presencePlaying(friendRow.modelData.presence) ? Tema.ok : Tema.muted
+                        }
+                        // Which of my PS5s this friend may use: one line, the switches in "PS5 paylaş"
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 42
+                            spacing: 6
+                            visible: home.server.consoles.length > 0
+                            Label {
+                                textFormat: Text.PlainText
                                 Layout.fillWidth: true
-                                Layout.leftMargin: 42
-                                checked: modelData.shared.indexOf(friendRow.modelData.name) >= 0
-                                text: qsTr("%1 kullanabilir").arg(modelData.name)
+                                text: home.shareSummary(friendRow.modelData.name)
+                                elide: Text.ElideRight
                                 font.family: Tema.body
-                                font.pixelSize: 14
-                                padding: 4
-                                onToggled: home.server.setShare(modelData.duid, friendRow.modelData.name, checked)
-                                contentItem: Label {
-                                    textFormat: Text.PlainText
-                                    text: shareSwitch.text
-                                    font: shareSwitch.font
-                                    color: shareSwitch.checked ? Tema.text : Tema.muted
-                                    leftPadding: shareSwitch.indicator.width + 10
-                                    verticalAlignment: Text.AlignVCenter
-                                    elide: Text.ElideRight
-                                }
-                                indicator: Rectangle {
-                                    implicitWidth: 34
-                                    implicitHeight: 20
-                                    x: shareSwitch.leftPadding
-                                    y: parent.height / 2 - height / 2
-                                    radius: 10
-                                    color: shareSwitch.checked ? Tema.accent : Tema.surface2
-                                    border.color: shareSwitch.checked ? Tema.accent : Tema.lineStrong
-                                    Rectangle {
-                                        x: shareSwitch.checked ? parent.width - width - 3 : 3
-                                        y: 3
-                                        width: 14
-                                        height: 14
-                                        radius: 7
-                                        color: shareSwitch.checked ? Tema.inkOnAccent : Tema.muted
-                                        Behavior on x { NumberAnimation { duration: 120 } }
-                                    }
-                                }
+                                font.pixelSize: 13
+                                color: Tema.muted
+                            }
+                            TextButton {
+                                kind: "quiet"
+                                text: qsTr("PS5 paylaş")
+                                implicitHeight: 28
+                                onClicked: home.openShareConsoles(friendRow.modelData.name)
                             }
                         }
                         Label {
@@ -2045,6 +3180,8 @@ Pane {
                 Popup {
                     id: confirmPopup
         parent: Overlay.overlay
+        // Over any other window that asks (the "PS5 paylaş" list opens the share question over itself)
+        z: 100
         x: Math.round((home.Window.width - width) / 2)
         y: Math.round((home.Window.height - height) / 2)
         width: Math.min(460, home.width - 64)
@@ -2052,10 +3189,19 @@ Pane {
         dim: true
         padding: 24
         property var action: null
+        property var cancelAction: null
         property string title: ""
         property string text: ""
-        function ask(t, x, a) { title = t; text = x; action = a; open() }
-        function tell(t, x) { title = t; text = x; action = null; open() }
+        property int wait: 0   // seconds before "Evet" can be pressed
+        function ask(t, x, a, waitSeconds, onCancel) {
+            title = t; text = x; action = a; cancelAction = onCancel || null; wait = waitSeconds || 0; open()
+        }
+        function tell(t, x) { title = t; text = x; action = null; cancelAction = null; wait = 0; open() }
+        Timer { interval: 1000; repeat: true; running: confirmPopup.opened && confirmPopup.wait > 0; onTriggered: confirmPopup.wait-- }
+        // Closed any way but "Evet" (Vazgeç, Esc, a click outside): the cancel action
+        property bool accepted: false
+        onAboutToShow: accepted = false
+        onClosed: { const c = cancelAction; cancelAction = null; if (!accepted && c) c(); }
         background: Rectangle { radius: Tema.radiusPanel; color: Tema.surface; border.color: Tema.lineStrong }
         contentItem: ColumnLayout {
             spacing: 14
@@ -2067,12 +3213,325 @@ Pane {
                 TextButton { kind: "quiet"; visible: confirmPopup.action !== null; text: qsTr("Vazgeç"); onClicked: confirmPopup.close() }
                 TextButton {
                     kind: "primary"
-                    text: confirmPopup.action !== null ? qsTr("Evet") : qsTr("Tamam")
-                    onClicked: { const a = confirmPopup.action; confirmPopup.close(); if (a) a(); }
+                    enabled: confirmPopup.wait <= 0
+                    text: confirmPopup.action === null ? qsTr("Tamam")
+                        : confirmPopup.wait > 0 ? qsTr("Evet (%1)").arg(confirmPopup.wait) : qsTr("Evet")
+                    onClicked: { const a = confirmPopup.action; confirmPopup.accepted = true; confirmPopup.close(); if (a) a(); }
                 }
             }
         }
     }
+            }
+        }
+    }
+
+    // "Adını değiştir" on my own PS5: a new name for it in Oviora; empty brings PSN's own name back
+    function showConsoleRename(duid, name) {
+        consoleRenameLoader.active = true;
+        if (consoleRenameLoader.item) consoleRenameLoader.item.popup.start(duid, name);
+    }
+    // Testing: --dialog consolerename opens it for the first own PS5 of the list (with --test-psn-links a
+    // made-up one, whose "Kaydet" sends nothing)
+    Timer {
+        interval: 6000
+        running: typeof vyTest !== "undefined" && vyTest.dialog === "consolerename"
+        onTriggered: {
+            for (const c of (home.server.available || []))
+                if (c && c.mine) {
+                    home.showConsoleRename(c.duid, c.name);
+                    return;
+                }
+        }
+    }
+    Loader {
+        id: consoleRenameLoader
+        active: false
+        sourceComponent: Component {
+            Item {
+                property alias popup: consoleRename
+                Popup {
+                    id: consoleRename
+        parent: Overlay.overlay
+        x: Math.round((home.Window.width - width) / 2)
+        y: Math.round((home.Window.height - height) / 2)
+        width: Math.min(460, home.width - 64)
+        modal: true
+        dim: true
+        padding: 24
+        property string duid: ""
+        function start(d, name) {
+            duid = d;
+            consoleNameField.text = name || "";
+            open();
+            consoleNameField.forceActiveFocus();
+            consoleNameField.selectAll();
+        }
+        function save() {
+            home.server.renameConsole(duid, consoleNameField.text.trim());
+            close();
+        }
+        background: Rectangle { radius: Tema.radiusPanel; color: Tema.surface; border.color: Tema.lineStrong }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label { textFormat: Text.PlainText; text: qsTr("Konsolun adı"); font.family: Tema.display; font.pixelSize: 22; color: Tema.text; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Field {
+                id: consoleNameField
+                placeholderText: qsTr("PS5'in adı")
+                maximumLength: 40
+                onAccepted: consoleRename.save()
+            }
+            Label { textFormat: Text.PlainText; text: qsTr("Boş bırakırsan PSN'deki adı geri gelir."); font.family: Tema.body; font.pixelSize: Tema.smallSize; color: Tema.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: 8
+                TextButton { kind: "quiet"; text: qsTr("Vazgeç"); onClicked: consoleRename.close() }
+                TextButton { kind: "primary"; text: qsTr("Kaydet"); onClicked: consoleRename.save() }
+            }
+        }
+    }
+            }
+        }
+    }
+
+    // ── "PS5 paylaş": my PS5s for one friend, a switch each (searchable when there are many) ──
+    function openShareConsoles(friend) {
+        shareConsolesLoader.active = true;
+        if (shareConsolesLoader.item) shareConsolesLoader.item.popup.start(friend);
+    }
+    // Testing: --dialog shareconsoles opens it for the first friend (with --test-groups --test-psn-links made-up
+    // friends and PS5s, whose switches send nothing)
+    Timer {
+        interval: 6000
+        running: typeof vyTest !== "undefined" && vyTest.dialog === "shareconsoles"
+        onTriggered: {
+            const f = home.server.friends || [];
+            if (f.length > 0 && home.server.consoles.length > 0)
+                home.openShareConsoles(f[0].name);
+        }
+    }
+    // Testing: --dialog psnlink shows the "PSN hesabını bağla" popup only (no sign-in address is asked for,
+    // so no page loads)
+    Timer {
+        interval: 6000
+        running: typeof vyTest !== "undefined" && vyTest.dialog === "psnlink"
+        onTriggered: {
+            psnLinkLoader.active = true;
+            if (psnLinkLoader.item) psnLinkLoader.item.popup.open();
+        }
+    }
+    Loader {
+        id: shareConsolesLoader
+        active: false
+        sourceComponent: Component {
+            Item {
+                property alias popup: shareConsoles
+                Popup {
+                    id: shareConsoles
+                    parent: Overlay.overlay
+                    x: Math.round((home.Window.width - width) / 2)
+                    y: Math.round((home.Window.height - height) / 2)
+                    width: Math.min(480, home.width - 64)
+                    height: Math.min(implicitHeight, home.Window.height - 64)
+                    modal: true
+                    dim: true
+                    padding: 24
+                    property string friend: ""
+                    onClosed: friend = ""
+                    readonly property var consoles: home.server.consoles || []
+                    // Many PS5s: a search field over the list
+                    readonly property bool many: consoles.length > 6
+                    // The consoles shown, as { i: index into home.server.consoles, head, sub }. A new list whenever the account
+                    // view or target friend changes, so the switches are made again from the server's word: a failed share goes
+                    // back off.
+                    readonly property var rows: {
+                        if (!friend.length)
+                            return [];
+                        const tr = Qt.locale("tr_TR");
+                        const q = many ? shareSearch.text.trim().toLocaleLowerCase(tr) : "";
+                        const keep = {};
+                        for (let i = 0; i < consoles.length; i++) {
+                            const c = consoles[i];
+                            if (!c)
+                                continue;
+                            if (q.length && (c.name || "").toLocaleLowerCase(tr).indexOf(q) < 0
+                                    && psnName(c).toLocaleLowerCase(tr).indexOf(q) < 0)
+                                continue;
+                            keep[i] = true;
+                        }
+                        // The rows of one PS5 (one per PSN account) together; over them a small header
+                        const out = [];
+                        for (const g of home.ps5Groups(consoles)) {
+                            const shown = g.indexes.filter(i => keep[i]);
+                            for (let k = 0; k < shown.length; k++)
+                                out.push({ i: shown[k], sub: g.rows.length > 1,
+                                           head: k === 0 && g.rows.length > 1 ? home.ps5Title(g.rows) + " · " + qsTr("%1 PSN hesabı").arg(g.rows.length) : "" });
+                        }
+                        return out;
+                    }
+                    // The PSN account the PS5 is on, as on the home rows ("" in streamer mode)
+                    function psnName(c) {
+                        return c && !home.streamerMode ? (c.psn_name || "").trim() : "";
+                    }
+                    function start(f) {
+                        friend = f;
+                        shareSearch.text = "";
+                        open();
+                        if (many)
+                            shareSearch.forceActiveFocus();
+                    }
+                    background: Rectangle {
+                        radius: Tema.radiusPanel
+                        color: Tema.surface
+                        border.color: Tema.lineStrong
+                    }
+                    contentItem: ColumnLayout {
+                        spacing: 12
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            text: qsTr("%1 ile paylaş").arg(shareConsoles.friend)
+                            elide: Text.ElideRight
+                            font.family: Tema.display
+                            font.pixelSize: 22
+                            color: Tema.text
+                        }
+                        Field {
+                            id: shareSearch
+                            visible: shareConsoles.many
+                            placeholderText: qsTr("PS5 ara")
+                            font.pixelSize: 15
+                            topPadding: 9
+                            bottomPadding: 9
+                            leftPadding: 14
+                        }
+                        EmptyNote {
+                            visible: shareConsoles.rows.length === 0
+                            Layout.topMargin: 0
+                            text: qsTr("Bu adda bir PS5 yok.")
+                        }
+                        ScrollView {
+                            id: shareScroll
+                            visible: shareConsoles.rows.length > 0
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.preferredHeight: Math.min(shareList.implicitHeight, 440)
+                            Layout.minimumHeight: Math.min(shareList.implicitHeight, 120)
+                            contentWidth: availableWidth
+                            clip: true
+                            // The scroll bar gets its own lane on the right, off the switches
+                            rightPadding: 14
+
+                            ColumnLayout {
+                                id: shareList
+                                width: parent.width
+                                spacing: 0
+                                Repeater {
+                                    model: shareConsoles.rows
+                                    delegate: ColumnLayout {
+                                        id: shareEntry
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        spacing: 0
+                                        // The PS5 over its rows when it is on several PSN accounts
+                                        Label {
+                                            textFormat: Text.PlainText
+                                            visible: shareEntry.modelData.head.length > 0
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: 8
+                                            Layout.leftMargin: 2
+                                            text: shareEntry.modelData.head
+                                            elide: Text.ElideRight
+                                            font.family: Tema.body
+                                            font.pixelSize: 12
+                                            font.weight: Font.DemiBold
+                                            color: Tema.muted
+                                        }
+                                        Basic.Switch {
+                                            id: shareSwitch
+                                            readonly property int modelData: shareEntry.modelData.i
+                                            // The live entry (home.server.consoles): its "shared" changes when the server answers
+                                            readonly property var con: shareConsoles.consoles[modelData]
+                                            readonly property string psn: shareConsoles.psnName(con)
+                                            Layout.fillWidth: true
+                                            checked: !!con && (con.shared || []).indexOf(shareConsoles.friend) >= 0
+                                            text: con ? con.name : ""
+                                            font.family: Tema.body
+                                            font.pixelSize: 15
+                                            topPadding: 8
+                                            bottomPadding: 8
+                                            leftPadding: shareEntry.modelData.sub ? 14 : 2
+                                            // Giving a friend the PS5 asks first (over this window), and "Evet" waits
+                                            // 3 s; taking it back does not ask
+                                            onToggled: {
+                                                if (!con)
+                                                    return;
+                                                if (!checked) {
+                                                    home.server.setShare(con.duid, shareConsoles.friend, false);
+                                                    return;
+                                                }
+                                                checked = false;
+                                                const sw = shareSwitch, duid = con.duid, ps5 = con.name, friend = shareConsoles.friend;
+                                                home.showSlowConfirmDialog(qsTr("PS5'ini paylaş"),
+                                                    qsTr("%1, %2 konsoluna internet üzerinden bağlanıp oynayabilecek; o oynarken sen bağlanamazsın. Paylaşmak istediğine emin misin?").arg(friend).arg(ps5),
+                                                    () => { if (sw) sw.checked = true; home.server.setShare(duid, friend, true); },
+                                                    () => { if (sw) sw.checked = false; });
+                                            }
+                                            contentItem: RowLayout {
+                                                spacing: 10
+                                                Item { implicitWidth: shareSwitch.indicator.width }
+                                                Label {
+                                                    textFormat: Text.PlainText
+                                                    Layout.fillWidth: shareSwitch.psn.length === 0
+                                                    Layout.maximumWidth: implicitWidth
+                                                    Layout.minimumWidth: Math.min(implicitWidth, 80)
+                                                    Layout.alignment: Qt.AlignBaseline
+                                                    text: shareSwitch.text
+                                                    elide: Text.ElideRight
+                                                    font: shareSwitch.font
+                                                    color: shareSwitch.checked ? Tema.text : Tema.muted
+                                                }
+                                                Label {
+                                                    textFormat: Text.PlainText
+                                                    visible: shareSwitch.psn.length > 0
+                                                    Layout.fillWidth: true
+                                                    Layout.alignment: Qt.AlignBaseline
+                                                    text: shareSwitch.psn
+                                                    elide: Text.ElideRight
+                                                    font.family: Tema.body
+                                                    font.pixelSize: 12
+                                                    color: Tema.faint
+                                                }
+                                            }
+                                            indicator: Rectangle {
+                                                implicitWidth: 34
+                                                implicitHeight: 20
+                                                x: shareSwitch.leftPadding
+                                                y: parent.height / 2 - height / 2
+                                                radius: 10
+                                                color: shareSwitch.checked ? Tema.accent : Tema.surface2
+                                                border.color: shareSwitch.checked ? Tema.accent : Tema.lineStrong
+                                                Rectangle {
+                                                    x: shareSwitch.checked ? parent.width - width - 3 : 3
+                                                    y: 3
+                                                    width: 14
+                                                    height: 14
+                                                    radius: 7
+                                                    color: shareSwitch.checked ? Tema.inkOnAccent : Tema.muted
+                                                    Behavior on x { NumberAnimation { duration: 120 } }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.alignment: Qt.AlignRight
+                            spacing: 8
+                            TextButton { kind: "primary"; text: qsTr("Kapat"); onClicked: shareConsoles.close() }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2135,36 +3594,67 @@ Pane {
         closePolicy: Popup.CloseOnEscape
         property string url: ""
         property bool sent: false
-        function start() { url = ""; sent = false; open(); platform.requestPsnLoginUrl() }
+        // Oyun bilgisi: the linked PSN account (> 0) this sign-in is for, and its name as shown
+        property int wideLink: 0
+        property string wideName: ""
+        // "Oyun bilgisini de aç" (an ordinary link only): the same sign-in also turns Oyun bilgisi on; after
+        // the redirect the page stays, hidden, and C++ reads Sony's sign-in for the linked account
+        property bool alsoWide: true
+        function start(link, name) {
+            url = ""; sent = false; wideLink = link > 0 ? link : 0; wideName = name || ""; alsoWide = true;
+            open(); platform.requestPsnLoginUrl()
+        }
         function show() {
             if (!opened) open();
             const p = webArea.mapToItem(null, 0, 0);
             psnWeb.open(url, p.x, p.y, webArea.width, webArea.height);
+            psnWeb.setWideLink(wideLink);
+            psnWeb.setLinkWide(wideLink <= 0 && alsoWide);
+        }
+        onAlsoWideChanged: if (opened && !sent) psnWeb.setLinkWide(wideLink <= 0 && alsoWide)
+        // The browser is a native window placed by numbers: when the popup opens during a page change (from
+        // Ayarlar the home page slides in), the first numbers are off. Kept in step while the popup is up.
+        Timer {
+            interval: 150
+            repeat: true
+            running: psnLink.opened && psnLink.url.length > 0
+            onTriggered: psnLink.place()
         }
         function place() {
             if (!opened || !url.length) return;
             const p = webArea.mapToItem(null, 0, 0);
             psnWeb.setRect(p.x, p.y, webArea.width, webArea.height);
         }
-        onClosed: psnWeb.close()
+        // A page held for "Oyun bilgisini de aç" closes itself once it has read (or failed to read) Sony's sign-in
+        onClosed: if (!psnWeb.holdingForWide()) psnWeb.close()
         background: Rectangle { radius: Tema.radiusPanel; color: Tema.surface; border.color: Tema.lineStrong }
         Connections {
             target: psnWeb
             function onRedirected(url) {
                 // Only its own sign-in: the console dialog's account lookup uses the same page
-                if (!psnLink.opened || psnLink.sent) return;
+                if (!psnLink.opened || psnLink.sent || psnLink.wideLink > 0) return;
                 psnLink.sent = true;
-                psnWeb.close();
+                if (!psnWeb.holdingForWide()) psnWeb.close();
                 platform.linkPsn(url);
                 psnLink.close();
                 home.showToast(qsTr("PSN hesabı"), qsTr("Bağlanıyor…"));
+            }
+            // Oyun bilgisi: the page has already closed itself and deleted what it kept
+            function onWideFinished(sentOk, error) {
+                if (!psnLink.opened || psnLink.sent || psnLink.wideLink <= 0) return;
+                psnLink.sent = true;
+                psnLink.close();
+                if (sentOk)
+                    home.showToast(qsTr("Oyun bilgisi"), qsTr("Açılıyor…"));
+                else
+                    home.showInfoDialog(qsTr("Oyun bilgisi açılamadı"), error);
             }
         }
         contentItem: ColumnLayout {
             spacing: 12
             RowLayout {
                 Layout.fillWidth: true
-                Label { textFormat: Text.PlainText; text: qsTr("PSN hesabını bağla"); font.family: Tema.display; font.pixelSize: 22; color: Tema.text; Layout.fillWidth: true }
+                Label { textFormat: Text.PlainText; text: psnLink.wideLink > 0 ? qsTr("Oyun bilgisi") : platform.psnLinked ? qsTr("PSN hesabı ekle") : qsTr("PSN hesabını bağla"); font.family: Tema.display; font.pixelSize: 22; color: Tema.text; Layout.fillWidth: true }
                 TextButton { kind: "quiet"; text: qsTr("Kapat"); onClicked: psnLink.close() }
             }
             Label {
@@ -2176,7 +3666,61 @@ Pane {
                 color: psnWeb.state === "error" ? Tema.danger : Tema.muted
                 text: !psnWeb.available ? qsTr("Bu bilgisayarda Microsoft Edge WebView2 yok; PSN girişi açılamıyor.")
                     : psnWeb.state === "error" ? psnWeb.errorText
+                    : psnLink.wideLink > 0 ? qsTr("%1 hesabıyla Sony'ye giriş yap; giriş bitince oyun bilgisi kendiliğinden açılır. Başka bir hesapla girersen açılmaz.").arg(psnLink.wideName)
+                    : platform.psnLinked ? qsTr("Eklemek istediğin PSN hesabıyla giriş yap; bağlı hesapların yerinde kalır. Zaten bağlı bir hesapla girersen yalnız girişi yenilenir.")
                     : qsTr("Sony'nin giriş sayfası; giriş bitince hesabın kendiliğinden bağlanır.")
+            }
+            // Oyun bilgisi in the same sign-in (not for the Oyun bilgisi sign-in of a linked account)
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                visible: psnLink.wideLink <= 0
+                Basic.CheckBox {
+                    id: alsoWideBox
+                    Layout.fillWidth: true
+                    checked: psnLink.alsoWide
+                    onToggled: psnLink.alsoWide = checked
+                    padding: 0
+                    spacing: 10
+                    indicator: Rectangle {
+                        x: alsoWideBox.leftPadding
+                        y: alsoWideBox.topPadding + (alsoWideBox.availableHeight - height) / 2
+                        implicitWidth: 18
+                        implicitHeight: 18
+                        radius: 4
+                        color: alsoWideBox.checked ? Tema.accent : (alsoWideBox.hovered ? Tema.line : Tema.surface2)
+                        border.width: alsoWideBox.checked ? 0 : 1
+                        border.color: alsoWideBox.visualFocus ? Tema.accent : Tema.lineStrong
+                        Text {
+                            anchors.centerIn: parent
+                            visible: alsoWideBox.checked
+                            text: "✓"
+                            color: Tema.inkOnAccent
+                            font.pixelSize: 13
+                            font.bold: true
+                        }
+                    }
+                    contentItem: Label {
+                        textFormat: Text.PlainText
+                        leftPadding: alsoWideBox.indicator.width + alsoWideBox.spacing
+                        verticalAlignment: Text.AlignVCenter
+                        text: qsTr("Oyun bilgisini de aç")
+                        font.family: Tema.body
+                        font.pixelSize: Tema.bodySize
+                        color: Tema.text
+                        wrapMode: Text.WordWrap
+                    }
+                }
+                Label {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    leftPadding: 28
+                    wrapMode: Text.WordWrap
+                    font.family: Tema.body
+                    font.pixelSize: Tema.smallSize
+                    color: Tema.muted
+                    text: qsTr("Arkadaşların PS5'te ne oynadığını görür. Giriş bilgin sunucuda güçlü şifrelemeyle saklanır; istediğin zaman Ayarlar > Hesap'tan kapatabilirsin.")
+                }
             }
             Item {
                 id: webArea

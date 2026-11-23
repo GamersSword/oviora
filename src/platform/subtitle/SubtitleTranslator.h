@@ -123,10 +123,14 @@ private:
         int lines = 0;
         QVariantList rows;
         qint64 startedMs = 0;
+        // Asked at a line's first read, before it was confirmed: only cached when it comes back,
+        // shown only if the line was confirmed meanwhile
+        bool early = false;
     };
 
     void loadConfig();
     void saveConfig();
+    void requestEarly(const QString &source, const QRectF &box, int lines, const QVariantList &rows);
     void applyConfig();
     void onConfigValueChanged(const QString &key, const QVariant &value);
     void setValue(const QString &key, const QVariant &value);
@@ -189,6 +193,11 @@ private:
     QVariantList displayRows;
     QString statusText;
     int emptyStreak = 0;
+    // Reading pace: the set interval while a line is up or a new one is being confirmed; twice that
+    // (at least 300 ms) after 2 s without any text, so a busy scene with no subtitle costs less
+    qint64 lastTextMs = 0;
+    bool relaxedTap = false;
+    void paceTap(bool textNow);
     // A new read waits for a second, alike one at about the same place before it is shown
     QString candidateText;
     QRectF candidateBox;

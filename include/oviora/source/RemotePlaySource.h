@@ -18,6 +18,7 @@
 
 struct AVCodecContext;
 struct AVFrame;
+struct AVPacket;
 struct ID3D12Device;
 
 namespace oviora::source {
@@ -33,6 +34,9 @@ struct RemotePlayConnectDesc {
     // protocol has no "stop sending media" switch, so the console still sends a
     // keepalive stream; only this side drops it.
     bool controlOnly=false;
+    // Yayın → Akıcılık tamponu: decoded frames wait a frame or two and leave on an even
+    // cadence (SmoothBuffer), so arrival jitter on an internet line does not reach the screen.
+    bool smoothing=false;
     // Set by the engine; shared ownership keeps the exact presentation adapter
     // alive until the decoder owner has stopped, including failed connects.
     std::shared_ptr<ID3D12Device> decodeDevice;
@@ -57,9 +61,13 @@ public:
     remoteplay::BackendResult submitMicrophone(const std::int16_t* pcm, std::size_t frames) { return backend_.submitMicrophone(pcm, frames); }
     remoteplay::ControllerFeedback takeFeedback(){return backend_.takeFeedback();}
     remoteplay::NativeSnapshot nativeSnapshot()const{return backend_.snapshot();} // session owner only
+    std::string watchEndReason()const{return backend_.watchEndReason();}
+    remoteplay::BackendResult requestIdr() { return backend_.requestIdr(); }
+    void setMediaTee(remoteplay::MediaRelayCallbacks tee) { backend_.setMediaTee(std::move(tee)); }
     remoteplay::BackendResult disconnectTransportForTest(){return backend_.stop();}
     bool connected() const noexcept { return connected_; }
     remoteplay::SessionInbox::Snapshot sessionSnapshot() const;
+    remoteplay::SessionInbox::Snapshot quickSnapshot() const { return inbox_->quickSnapshot(); }
     std::shared_ptr<const remoteplay::SessionInbox> telemetryInbox()const{return inbox_;}
     void recoverVideo(){flushDecoder();if(token_)inbox_->decodeFailed(token_->generation());}
 
@@ -94,6 +102,7 @@ private:
     SourceInfo info_{};
     AVCodecContext* codecContext_ = nullptr;
     AVFrame* decoderFrame_ = nullptr;
+    AVPacket* submitPacketBuf_ = nullptr;
     std::deque<DecodedFrame> ready_;
     std::shared_ptr<AVFrame> lastFrame_;
     struct PacketStamp { std::int64_t id; pipeline::FramePacket packet; };
@@ -118,6 +127,8 @@ private:
     RemotePlayConnectDesc::DecodeMode decodeMode_=RemotePlayConnectDesc::DecodeMode::Automatic;
     std::shared_ptr<ID3D12Device> decodeDevice_;
     bool hardwareFallback_=false;
+    // Decode errors in a row: a lossy line gives the odd broken frame; only a run of them is a real decoder failure
+    int decodeErrorsInRow_=0;
     bool discardMedia_=false;
 };
 

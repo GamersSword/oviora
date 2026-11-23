@@ -29,6 +29,7 @@ Rectangle {
 
     signal closeRequested()
     signal psnLinkRequested()
+    signal psnWideRequested(int link, string name)
 
     readonly property bool signedIn: platform.configured && platform.status === "active"
 
@@ -148,7 +149,8 @@ Rectangle {
         property bool picked: false
         // Menu order: page index, title, one-line description, id, shown
         readonly property var allSections: [
-            [10, qsTr("Hesap"), qsTr("Oviora hesabın, PSN bağlantın ve sürüm"), "account", settings.signedIn],
+            // --test-psn-links: the account page with made-up PSN accounts even when signed out
+            [10, qsTr("Hesap"), qsTr("Oviora hesabın, PSN bağlantın ve sürüm"), "account", settings.signedIn || platform.testPsnLinks === true],
             [0, qsTr("Genel"), qsTr("Bağlantı kesilince ve uyku modunda ne olacağı, yayın menüsü kısayolları"), "general", true],
             [1, qsTr("Görüntü"), qsTr("Kod çözücü, pencere düzeni ve dikey eşitleme"), "video", true],
             [2, qsTr("Yayın"), qsTr("Çözünürlük, kare hızı, bit hızı ve kodlayıcı; ev ağı ve internet için ayrı"), "stream", true],
@@ -413,6 +415,7 @@ Rectangle {
                 S.AccountPage {
                     onSignOutRequested: confirm.ask(qsTr("Hesaptan çık"), qsTr("Bu bilgisayardaki giriş kapansın mı?"), () => platform.logout())
                     onPsnLinkRequested: settings.psnLinkRequested()
+                    onPsnWideRequested: (link, name) => settings.psnWideRequested(link, name)
                     onReportRequested: report.open()
                     onDeleteAccountRequested: deleteAccountPopup.ask()
                     onConfirmRequested: (title, text, action) => confirm.ask(title, text, action)

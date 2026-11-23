@@ -396,7 +396,7 @@ SettingsPage {
             }
             SettingRow {
                 title: qsTr("Okuma sıklığı")
-                help: qsTr("Ekranın ne kadar sık okunacağı. Daha kısa süre daha çabuk tepki verir ama işlemciyi yorar. Varsayılan 250 ms.")
+                help: qsTr("Ekranın ne kadar sık okunacağı. Daha kısa süre daha çabuk tepki verir ama işlemciyi yorar. Varsayılan 150 ms.")
                 ValueSlider {
                     implicitWidth: 300
                     valueWidth: 70

@@ -2,6 +2,10 @@
 
 #include "oviora/platform/OvioraServer.h"
 #include "oviora/platform/SecretStore.h"
+#include "oviora/platform/SecretWipe.h"
+#include <QBuffer>
+#include <cstring>
+#include "oviora/platform/DiscordPresence.h"
 #include "oviora/RuntimePaths.h"
 #include <QSemaphore>
 #include <memory>
@@ -76,6 +80,17 @@ OvioraServer::OvioraServer(Hooks hooks, QObject *parent)
 {
 	load();
 	cleanupOldFiles();
+	test_psn_links = QCoreApplication::arguments().contains(QStringLiteral("--test-psn-links"));
+	test_github_update = QCoreApplication::arguments().contains(QStringLiteral("--test-github-update"));
+	if(test_github_update)
+		QTimer::singleShot(0, this, [this]() { githubCheckUpdate(); });
+	test_groups = QCoreApplication::arguments().contains(QStringLiteral("--test-groups"));
+	{
+		const QStringList args = QCoreApplication::arguments();
+		const qsizetype at = args.indexOf(QStringLiteral("--test-consoles"));
+		if(at >= 0 && at + 1 < args.size())
+			test_consoles = qBound(1, args.at(at + 1).toInt(), 200);
+	}
 	// Shortcuts, the app list entry and the old exe: a moment after start, the old exe's starter has ended by then
 	QTimer::singleShot(4000, this, &OvioraServer::takeOverOldName);
 	poll_timer.setInterval(POLL_MS);
@@ -248,17 +263,61 @@ void OvioraServer::pin(QNetworkReply *reply)
 	});
 }
 
-QNetworkReply *OvioraServer::post(const QString &action, QJsonObject body, Callback done)
+QNetworkRequest OvioraServer::apiRequest() const
 {
 	QNetworkRequest req{QUrl(server_url)};
 	req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 	req.setTransferTimeout(30000);
+	return req;
+}
+
+QByteArray OvioraServer::requestBody(const QString &action, QJsonObject body) const
+{
 	body["a"] = action;
 	// The server only lets the current Yakamoz do anything but update
 	body["client"] = "win:" + installedVersion();
 	if(!token.isEmpty() && !body.contains("token"))
 		body["token"] = token;
-	QNetworkReply *reply = net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+	return QJsonDocument(body).toJson(QJsonDocument::Compact);
+}
+
+QNetworkReply *OvioraServer::post(const QString &action, QJsonObject body, Callback done)
+{
+	QNetworkReply *reply = net->post(apiRequest(), requestBody(action, std::move(body)));
+	answer(reply, std::move(done));
+	return reply;
+}
+
+QNetworkReply *OvioraServer::postSecret(const QString &action, QJsonObject body, const char *key, QByteArray &secret, Callback done)
+{
+	// The secret is spliced into the JSON text by hand (it is only letters, digits, '-', '_' and '.', so it
+	// needs no escaping): no QJsonObject, document or temporary string ever holds it. The request reads
+	// this one buffer in place (QBuffer over it), and the buffer is overwritten when the request is over.
+	const QByteArray json = requestBody(action, std::move(body));
+	auto payload = std::make_shared<QByteArray>();
+	payload->reserve(json.size() + qsizetype(strlen(key)) + secret.size() + 8);
+	payload->append(json.constData(), json.size() - 1);  // without the closing '}'
+	payload->append(",\"");
+	payload->append(key);
+	payload->append("\":\"");
+	payload->append(secret.constData(), secret.size());
+	payload->append("\"}");
+	SecretWipe::wipe(secret);
+	auto *device = new QBuffer(payload.get());
+	device->open(QIODevice::ReadOnly);
+	QNetworkReply *reply = net->post(apiRequest(), device);
+	// Wiped when the answer is there, and in any case when the reply goes (then the buffer over it goes too)
+	connect(reply, &QNetworkReply::finished, reply, [payload]() { SecretWipe::wipe(*payload); });
+	connect(reply, &QObject::destroyed, [payload, device]() {
+		SecretWipe::wipe(*payload);
+		delete device;
+	});
+	answer(reply, std::move(done));
+	return reply;
+}
+
+void OvioraServer::answer(QNetworkReply *reply, Callback done)
+{
 	pin(reply);
 	connect(reply, &QNetworkReply::finished, this, [this, reply, done]() {
 		reply->deleteLater();
@@ -268,13 +327,15 @@ QNetworkReply *OvioraServer::post(const QString &action, QJsonObject body, Callb
 		if(json.value("update_required").toBool())
 			requireUpdate();
 		if(json.contains("error"))
+		{
+			json["http_status"] = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 			done(json, json.value("error").toString());
+		}
 		else if(reply->error() != QNetworkReply::NoError)
 			done(json, tr("Sunucuya ulaşılamadı (%1)").arg(reply->errorString()));
 		else
 			done(json, QString());
 	});
-	return reply;
 }
 
 QJsonObject OvioraServer::callBlocking(const QString &action, const QJsonObject &body, QString *error, int timeout_ms)
@@ -315,7 +376,8 @@ QJsonObject OvioraServer::callBlocking(const QString &action, const QJsonObject 
 
 // ---------------------------------------------------------------- running game
 
-void OvioraServer::reportConsoleApp(const QString &duid, const QString &app_name, const QString &title_id, const QString &state)
+void OvioraServer::reportConsoleApp(const QString &duid, const QString &app_name, const QString &title_id, const QString &state,
+	const QString &console_name)
 {
 	if(token.isEmpty() || duid.isEmpty())
 		return;
@@ -334,6 +396,8 @@ void OvioraServer::reportConsoleApp(const QString &duid, const QString &app_name
 	body["app_name"] = app_name.left(128);
 	body["title_id"] = title_id;
 	body["state"] = state;
+	if(!console_name.isEmpty())
+		body["name"] = console_name.left(64);
 	const QString key = duid.toLower();
 	post("console_app", body, [this, key](const QJsonObject &, const QString &error) {
 		if(error.isEmpty())
@@ -370,6 +434,7 @@ QString OvioraServer::runningTitleId(const QString &duid) const
 
 void OvioraServer::loggedIn()
 {
+	++auth_gen;
 	account_status = "active";
 	emit changed();
 	refresh();
@@ -380,23 +445,40 @@ void OvioraServer::loggedIn()
 
 void OvioraServer::loggedOut(const QString &why)
 {
+	++auth_gen;
 	token.clear();
 	account_status = "none";
 	account = QJsonObject();
+	invalidateAccountCaches();
+	setBusy(false);
 	invite_info.clear();
 	invite_qr.clear();
 	history_list.clear();
 	history_more = false;
 	history_next_before = 0;
+	// A page on its way is dropped by its auth_gen check: the flag must not wait for it
+	history_loading = false;
 	emit inviteChanged();
 	emit historyChanged();
 	notification_list.clear();
 	unread = 0;
 	emit notificationsChanged();
+	group_list = QJsonArray();
+	groups_loaded = false;
+	groups_busy = false;
+	groups_unsupported = false;
+	events_busy = false;
+	cache_groups = false;
+	emit groupsChanged();
 	account_timer.stop();
 	update_timer.stop();
 	save();
 	emit changed();
+	emit psnLinksChanged();
+	emit consolesChanged();
+	emit availableChanged();
+	emit friendsChanged();
+	emit requestsChanged();
 	emit accountChanged();
 	if(!why.isEmpty())
 		emit message(tr("Oturum kapandı"), why);
@@ -503,7 +585,10 @@ void OvioraServer::loadInvite(bool regenerate)
 	QJsonObject body;
 	if(regenerate)
 		body["regenerate"] = true;
-	post("invite", body, [this](const QJsonObject &r, const QString &error) {
+	const quint64 gen = auth_gen;
+	post("invite", body, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		if(!error.isEmpty())
 		{
 			emit message(tr("Davet bağlantısı alınamadı"), error);
@@ -517,7 +602,10 @@ void OvioraServer::setInviteApprove(bool approve)
 {
 	if(token.isEmpty())
 		return;
-	post("invite", { { "approve", approve } }, [this](const QJsonObject &r, const QString &error) {
+	const quint64 gen = auth_gen;
+	post("invite", { { "approve", approve } }, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		if(!error.isEmpty())
 		{
 			emit message(tr("Davet ayarı değiştirilemedi"), error);
@@ -536,7 +624,10 @@ void OvioraServer::acceptInvite(const QString &code_or_link)
 		emit message(tr("Davet kodu"), tr("Bu bir davet kodu ya da bağlantısı değil."));
 		return;
 	}
-	post("invite_accept", { { "code", code } }, [this](const QJsonObject &r, const QString &error) {
+	const quint64 gen = auth_gen;
+	post("invite_accept", { { "code", code } }, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		if(!error.isEmpty())
 		{
 			emit message(tr("Davet kullanılamadı"), error);
@@ -589,7 +680,10 @@ void OvioraServer::loadHistory(bool more)
 	QJsonObject body { { "limit", 30 } };
 	if(more && history_next_before > 0)
 		body["before"] = history_next_before;
-	post("history", body, [this, more](const QJsonObject &r, const QString &error) {
+	const quint64 gen = auth_gen;
+	post("history", body, [this, gen, more](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		history_loading = false;
 		if(!error.isEmpty())
 		{
@@ -642,11 +736,29 @@ QString OvioraServer::legalUrl(const QString &page) const
 	return base.resolved(QUrl(page)).toString();
 }
 
+void OvioraServer::setBusy(bool on)
+{
+	if(busy == on)
+		return;
+	busy = on;
+	emit busyChanged();
+}
+
+void OvioraServer::invalidateAccountCaches()
+{
+	cache_psn_links = false;
+	cache_psn_accounts = false;
+	cache_consoles = false;
+	cache_available = false;
+	cache_friends = false;
+	cache_incoming = false;
+	cache_outgoing = false;
+}
+
 void OvioraServer::takeAccount(const QJsonObject &r)
 {
 	if(!r.contains("user"))
 		return;
-	account = r;
 	if(r.value("update_required").toBool())
 		requireUpdate();
 	else if(update_required)
@@ -654,7 +766,31 @@ void OvioraServer::takeAccount(const QJsonObject &r)
 		update_required = false;
 		emit updateChanged();
 	}
-	emit accountChanged();
+	const QJsonObject prev = account;
+	const bool was_loaded = prev.contains("user");
+	if(prev != r)
+	{
+		account = r;
+		const bool psn_links_diff = !was_loaded
+			|| prev.value("psn_links") != r.value("psn_links")
+			|| prev.value("psn_links_max") != r.value("psn_links_max")
+			|| prev.value("psn_accounts") != r.value("psn_accounts")
+			|| prev.value("psn").toBool() != r.value("psn").toBool()
+			|| prev.value("psn_account").toString() != r.value("psn_account").toString()
+			|| (!r.contains("psn_links") && prev.value("consoles") != r.value("consoles"));
+		const bool consoles_diff = !was_loaded || prev.value("consoles") != r.value("consoles");
+		const bool available_diff = !was_loaded || prev.value("available") != r.value("available");
+		const bool friends_diff = !was_loaded || prev.value("friends") != r.value("friends");
+		const bool requests_diff = !was_loaded
+			|| prev.value("incoming") != r.value("incoming")
+			|| prev.value("outgoing") != r.value("outgoing");
+		if(psn_links_diff) { cache_psn_links = false; cache_psn_accounts = false; emit psnLinksChanged(); }
+		if(consoles_diff) { cache_consoles = false; emit consolesChanged(); }
+		if(available_diff) { cache_available = false; emit availableChanged(); }
+		if(friends_diff) { cache_friends = false; emit friendsChanged(); }
+		if(requests_diff) { cache_incoming = false; cache_outgoing = false; emit requestsChanged(); }
+		emit accountChanged();
+	}
 	if(r.contains("warning"))
 		emit message(tr("PSN"), r.value("warning").toString());
 }
@@ -674,15 +810,17 @@ void OvioraServer::requireUpdate()
 
 void OvioraServer::accountCall(const QString &action, QJsonObject body, const QString &fail_title)
 {
-	post(action, body, [this, fail_title](const QJsonObject &r, const QString &error) {
+	const quint64 gen = auth_gen;
+	post(action, body, [this, gen, fail_title](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		if(!error.isEmpty())
 		{
 			emit message(fail_title, error);
-			busy = false;
-			emit accountChanged();
+			setBusy(false);
 			return;
 		}
-		busy = false;
+		setBusy(false);
 		takeAccount(r);
 	});
 }
@@ -691,10 +829,12 @@ void OvioraServer::refresh()
 {
 	if(!configured() || token.isEmpty())
 		return;
-	post("me", {}, [this](const QJsonObject &r, const QString &error) {
-		if(error.isEmpty())
+	const quint64 gen = auth_gen;
+	post("me", {}, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen == auth_gen && error.isEmpty())
 			takeAccount(r);
 	});
+	fetchGroups();
 	fetchEvents();
 }
 
@@ -708,16 +848,270 @@ void OvioraServer::requestPsnLoginUrl()
 	});
 }
 
-void OvioraServer::linkPsn(const QString &redirect)
+QVariantList OvioraServer::psnAccounts() const
 {
-	busy = true;
-	emit accountChanged();
-	accountCall("psn_link", { { "redirect", redirect } }, tr("PSN hesabı bağlanamadı"));
+	if(!loaded())
+		return account.value("psn_accounts").toVariant().toList();
+	if(!cache_psn_accounts)
+	{
+		cached_psn_accounts = account.value("psn_accounts").toVariant().toList();
+		cache_psn_accounts = true;
+	}
+	return cached_psn_accounts;
 }
 
-void OvioraServer::unlinkPsn()
+QVariantList OvioraServer::psnLinks() const
 {
-	accountCall("psn_unlink", {}, tr("PSN hesabı kaldırılamadı"));
+	if(test_psn_links)
+		return {
+			QVariantMap{ { "id", -1 }, { "n", 1 }, { "name", "PSN 1" }, { "online_id", "" }, { "account_id", "" },
+				{ "primary", true }, { "linked", 1795103023 }, { "consoles", qMax(1, test_consoles - 1) }, { "wide", "ok" } },
+			QVariantMap{ { "id", -2 }, { "n", 2 }, { "name", "kardesim_ps" }, { "online_id", "kardesim_ps" }, { "account_id", "" },
+				{ "primary", false }, { "linked", 1795104399 }, { "consoles", test_consoles > 1 ? 2 : 1 }, { "wide", "expired" } },
+			QVariantMap{ { "id", -3 }, { "n", 3 }, { "name", "kuzen_ps" }, { "online_id", "kuzen_ps" }, { "account_id", "" },
+				{ "primary", false }, { "linked", 1795105120 }, { "consoles", 1 }, { "wide", "" } },
+		};
+	if(!loaded())
+		return {};
+	if(!cache_psn_links)
+	{
+		if(account.contains("psn_links"))
+			cached_psn_links = account.value("psn_links").toVariant().toList();
+		else if(!psnLinked())
+			cached_psn_links.clear();
+		else
+			// A server from before several PSN accounts: its one link, as an entry of the list
+			cached_psn_links = { QVariantMap{ { "id", 0 }, { "n", 1 }, { "name", "PSN" }, { "online_id", "" }, { "account_id", psnAccountId() },
+				{ "primary", true }, { "linked", 0 }, { "consoles", account.value("consoles").toArray().size() } } };
+		cache_psn_links = true;
+	}
+	return cached_psn_links;
+}
+
+int OvioraServer::psnLinksMax() const
+{
+	if(test_psn_links)
+		return 5;
+	return account.contains("psn_links_max") ? account.value("psn_links_max").toInt(1) : 1;
+}
+
+QVariantList OvioraServer::consoles() const
+{
+	if(!loaded())
+		return withTestPsn(account.value("consoles").toVariant().toList(), false);
+	if(!cache_consoles)
+	{
+		cached_consoles = withTestPsn(account.value("consoles").toVariant().toList(), false);
+		cache_consoles = true;
+	}
+	return cached_consoles;
+}
+
+QVariantList OvioraServer::available() const
+{
+	if(!loaded())
+		return withTestPsn(account.value("available").toVariant().toList(), true);
+	if(!cache_available)
+	{
+		cached_available = withTestPsn(account.value("available").toVariant().toList(), true);
+		cache_available = true;
+	}
+	return cached_available;
+}
+
+QStringList OvioraServer::incoming() const
+{
+	if(!loaded())
+		return account.value("incoming").toVariant().toStringList();
+	if(!cache_incoming)
+	{
+		cached_incoming = account.value("incoming").toVariant().toStringList();
+		cache_incoming = true;
+	}
+	return cached_incoming;
+}
+
+QStringList OvioraServer::outgoing() const
+{
+	if(!loaded())
+		return account.value("outgoing").toVariant().toStringList();
+	if(!cache_outgoing)
+	{
+		cached_outgoing = account.value("outgoing").toVariant().toStringList();
+		cache_outgoing = true;
+	}
+	return cached_outgoing;
+}
+
+// --test-psn-links: own PS5s shown as on the made-up accounts (the second one gets the last PS5);
+// signed out, made-up PS5s so the home screen's cards can be seen: the first PS5 is on all three
+// made-up PSN accounts (three rows with one `ps5` key, one card). Only on screen: connecting to
+// them stops at once, nothing is sent to the server.
+QVariantList OvioraServer::withTestPsn(QVariantList list, bool own_only) const
+{
+	if(!test_psn_links)
+		return list;
+	if(!loaded())
+	{
+		// Shared with made-up friends (--test-groups) so the friend rows' summaries differ: mehmet the first
+		// two, ayse the first one, can every fifth of a long list (--test-consoles)
+		auto row = [](const QString &duid, const QString &ps5, const QString &name, const QStringList &shared, int link) {
+			static const char *const psn_names[] = { "PSN 1", "kardesim_ps", "kuzen_ps" };
+			return QVariantMap{ { "duid", duid }, { "ps5", ps5 }, { "name", name }, { "host", "" }, { "mine", true },
+				{ "busy", "" }, { "shared", shared }, { "sid", "" }, { "psn_link", -link }, { "psn_name", psn_names[link - 1] } };
+		};
+		for(int i = 1; i <= test_consoles; ++i)
+		{
+			QStringList shared;
+			if(i <= 2)
+				shared << "mehmet";
+			if(i == 1)
+				shared << "ayse";
+			if(i % 5 == 0)
+				shared << "can";
+			const QString name = i == 1 ? QStringLiteral("Salon PS5") : i == 2 ? QStringLiteral("Yatak odası PS5") : QStringLiteral("PS5 Yan-%1").arg(i - 2);
+			const QString ps5 = QStringLiteral("testps5-%1").arg(i);
+			list << row(QStringLiteral("test-%1").arg(i), ps5, name, shared, i == test_consoles && i > 1 ? 2 : 1);
+			// The first PS5 on the other two made-up PSN accounts too
+			if(i == 1)
+			{
+				list << row(QStringLiteral("test-1b"), ps5, name, { "mehmet" }, 2);
+				list << row(QStringLiteral("test-1c"), ps5, QStringLiteral("Salon PS5 (kuzen)"), {}, 3);
+			}
+		}
+		// --test-groups: rows friends share with me; mehmet's PS5 on two of his PSN accounts (one card, busy:
+		// he plays on it, so the queue shows), ayse's on one
+		if(own_only && test_groups)
+		{
+			auto theirs = [](const QString &host, const QString &duid, const QString &ps5, const QString &name, const QString &busy) {
+				return QVariantMap{ { "duid", duid }, { "ps5", ps5 }, { "name", name }, { "host", host }, { "mine", false },
+					{ "busy", busy }, { "queued", false }, { "queue_pos", 0 }, { "queue_len", 0 } };
+			};
+			list << theirs("mehmet", "test-f1", "testps5-f1", "Oturma odası", "mehmet");
+			list << theirs("ayse", "test-f3", "testps5-f3", "Ayşe PS5", "");
+			list << theirs("mehmet", "test-f2", "testps5-f1", "Oturma odası 2", "mehmet");
+		}
+		return list;
+	}
+	int own = 0;
+	for(const QVariant &v : list)
+		own += !own_only || v.toMap().value("mine").toBool();
+	int n = 0;
+	for(QVariant &v : list)
+	{
+		QVariantMap c = v.toMap();
+		if(own_only && !c.value("mine").toBool())
+			continue;
+		const bool second = ++n == own && own > 1;
+		c["psn_link"] = second ? -2 : -1;
+		c["psn_name"] = second ? "kardesim_ps" : "PSN 1";
+		v = c;
+	}
+	return list;
+}
+
+void OvioraServer::linkPsn(const QString &redirect)
+{
+	setBusy(true);
+	// The links before, to find the new one when the server does not name it (psn_link_id)
+	QList<int> before;
+	for(const QVariant &v : psnLinks())
+		before << v.toMap().value("id").toInt();
+	// Signed in with a PSN account that is linked already: only its login was renewed
+	const quint64 gen = auth_gen;
+	post("psn_link", { { "redirect", redirect } }, [this, gen, before](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
+		setBusy(false);
+		if(!error.isEmpty())
+		{
+			emit message(tr("PSN hesabı bağlanamadı"), error);
+			emit psnLinkFinished(false, 0);
+			return;
+		}
+		takeAccount(r);
+		const bool again = r.value("psn_link_again").toBool();
+		if(again)
+			emit message(tr("PSN hesabı"), tr("Bu PSN hesabı zaten bağlıydı; girişi yenilendi."));
+		// Which account this sign-in was: the server's psn_link_id (also for a renewed one), else the one
+		// id that was not there before (a renewed account cannot be told apart that way: 0)
+		int link = r.value("psn_link_id").toInt();
+		if(link <= 0 && !again)
+		{
+			QList<int> added;
+			for(const QVariant &v : psnLinks())
+			{
+				const int id = v.toMap().value("id").toInt();
+				if(id > 0 && !before.contains(id))
+					added << id;
+			}
+			if(added.size() == 1)
+				link = added.first();
+		}
+		emit psnLinkFinished(true, link > 0 ? link : 0);
+	});
+}
+
+void OvioraServer::unlinkPsn(int link)
+{
+	if(test_psn_links && link < 0)
+		return;
+	QJsonObject body;
+	if(link > 0)
+		body["psn_link"] = link;
+	accountCall("psn_unlink", body, tr("PSN hesabı kaldırılamadı"));
+}
+
+void OvioraServer::wideLinkSoftFailed()
+{
+	emit toast(tr("PSN hesabı"), tr("PSN bağlandı; oyun bilgisi açılamadı, Ayarlar > Hesap'tan tekrar deneyebilirsin."));
+}
+
+void OvioraServer::wideLinkPsn(int link, QByteArray &npsso, bool afterLink)
+{
+	// --test-psn-links' made-up accounts (and an older server's single link, id 0) never reach the server;
+	// the value is checked again before it goes anywhere: only what Sony's page can hold
+	bool usable = link > 0 && signedIn() && npsso.size() >= 16 && npsso.size() <= 512;
+	for(qsizetype i = 0; usable && i < npsso.size(); ++i)
+	{
+		const char c = npsso.at(i);
+		usable = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+	}
+	if(!usable)
+	{
+		SecretWipe::wipe(npsso);
+		if(afterLink)
+			wideLinkSoftFailed();
+		else if(link > 0)
+			emit message(tr("Oyun bilgisi açılamadı"), tr("Sony girişi okunamadı. Yeniden dene."));
+		return;
+	}
+	setBusy(true);
+	const quint64 gen = auth_gen;
+	postSecret("psn_wide_link", { { "psn_link", link } }, "npsso", npsso, [this, gen, afterLink](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
+		setBusy(false);
+		if(!error.isEmpty())
+		{
+			if(afterLink)
+				wideLinkSoftFailed();
+			else
+				emit message(tr("Oyun bilgisi açılamadı"), error);
+			return;
+		}
+		takeAccount(r);
+		emit toast(tr("Oyun bilgisi"), tr("Oyun bilgisi açıldı"));
+	});
+	SecretWipe::wipe(npsso);  // postSecret wiped it already; never left behind whatever happens above
+}
+
+void OvioraServer::wideUnlinkPsn(int link)
+{
+	if(link <= 0)
+		return;
+	setBusy(true);
+	accountCall("psn_wide_unlink", { { "psn_link", link } }, tr("Oyun bilgisi kapatılamadı"));
 }
 
 void OvioraServer::savePsnAccount(const QString &id, const QString &name)
@@ -725,8 +1119,9 @@ void OvioraServer::savePsnAccount(const QString &id, const QString &name)
 	const QString trimmedId = id.trimmed();
 	if(!signedIn() || trimmedId.isEmpty())
 		return;
-	post("psn_account_save", { { "id", trimmedId }, { "name", name.trimmed().left(64) } }, [this](const QJsonObject &r, const QString &error) {
-		if(!error.isEmpty())
+	const quint64 gen = auth_gen;
+	post("psn_account_save", { { "id", trimmedId }, { "name", name.trimmed().left(64) } }, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen || !error.isEmpty())
 			return;
 		if(r.contains("user"))
 			takeAccount(r);
@@ -740,7 +1135,10 @@ void OvioraServer::removePsnAccount(const QString &id)
 	const QString trimmedId = id.trimmed();
 	if(!signedIn() || trimmedId.isEmpty())
 		return;
-	post("psn_account_remove", { { "id", trimmedId } }, [this](const QJsonObject &r, const QString &error) {
+	const quint64 gen = auth_gen;
+	post("psn_account_remove", { { "id", trimmedId } }, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		if(!error.isEmpty())
 		{
 			emit message(tr("PSN hesabı silinemedi"), error);
@@ -753,11 +1151,24 @@ void OvioraServer::removePsnAccount(const QString &id)
 	});
 }
 
-void OvioraServer::refreshConsoles()
+void OvioraServer::refreshConsoles(int link)
 {
-	busy = true;
-	emit accountChanged();
-	accountCall("consoles_refresh", {}, tr("Konsollar yenilenemedi"));
+	if(test_psn_links && link < 0)
+		return;
+	setBusy(true);
+	QJsonObject body;
+	if(link > 0)
+		body["psn_link"] = link;
+	accountCall("consoles_refresh", body, tr("Konsollar yenilenemedi"));
+}
+
+void OvioraServer::renameConsole(const QString &duid, const QString &name)
+{
+	// --test-psn-links' made-up PS5s are only on screen
+	if(duid.isEmpty() || (test_psn_links && duid.startsWith(QLatin1String("test-"))))
+		return;
+	setBusy(true);
+	accountCall("console_rename", { { "duid", duid }, { "name", name.trimmed().left(40) } }, tr("Konsolun adı değiştirilemedi"));
 }
 
 void OvioraServer::addFriend(const QString &name)
@@ -776,9 +1187,304 @@ void OvioraServer::removeFriend(const QString &name)
 	accountCall("friend_remove", { { "name", name } }, tr("Arkadaşlık kaldırılamadı"));
 }
 
+// ---------------------------------------------------------------- presence and friend groups
+
+// The presence object of a friend or group member; an older server has only the online bool
+static QVariantMap presenceOf(const QVariantMap &entry)
+{
+	QVariantMap p = entry.value("presence").toMap();
+	if(p.value("state").toString().isEmpty())
+		p = QVariantMap{ { "state", entry.value("online").toBool() ? "online" : "offline" }, { "game", "" }, { "host", "" },
+			{ "own", false }, { "since", 0 } };
+	return p;
+}
+
+// --test-groups: a presence that started / was last seen `ago` seconds before now (-1: since 0)
+static QVariantMap testPresence(const char *state, const char *game, const char *host, bool own, qint64 ago)
+{
+	return { { "state", state }, { "game", game }, { "host", host }, { "own", own },
+		{ "since", ago < 0 ? 0 : QDateTime::currentSecsSinceEpoch() - ago } };
+}
+
+QVariantList OvioraServer::friends() const
+{
+	if(test_groups && !loaded())
+		return {
+			QVariantMap{ { "name", "ayse" }, { "online", true }, { "shares", QStringList{ "Ayşe PS5" } },
+				{ "presence", testPresence("playing", "Astro Bot", "mehmet", false, 25 * 60) } },
+			QVariantMap{ { "name", "mehmet" }, { "online", true }, { "shares", QStringList{ "Oturma odası", "Oturma odası 2" } },
+				{ "presence", testPresence("playing", "GTA VI", "", true, 70 * 60) } },
+			QVariantMap{ { "name", "can" }, { "online", true }, { "shares", QStringList() },
+				{ "presence", testPresence("online", "", "", false, -1) } },
+			QVariantMap{ { "name", "zeynep" }, { "online", false }, { "shares", QStringList() },
+				{ "presence", testPresence("offline", "", "", false, 2 * 3600 + 300) } },
+			QVariantMap{ { "name", "burak" }, { "online", false }, { "shares", QStringList() },
+				{ "presence", testPresence("offline", "", "", false, 3 * 86400) } },
+		};
+	if(!cache_friends)
+	{
+		QVariantList list = account.value("friends").toVariant().toList();
+		for(QVariant &v : list)
+		{
+			QVariantMap f = v.toMap();
+			f["presence"] = presenceOf(f);
+			v = f;
+		}
+		cached_friends = std::move(list);
+		cache_friends = true;
+	}
+	return cached_friends;
+}
+
+QVariantList OvioraServer::groups() const
+{
+	QVariantList list;
+	const bool test_mode = test_groups && !loaded();
+	if(!test_mode && cache_groups)
+		return cached_groups;
+	if(test_mode)
+	{
+		const QString me = user_name.isEmpty() ? QStringLiteral("deneme") : user_name;
+		auto member = [](const QString &name, bool owner, bool is_me, bool is_friend, const QVariantMap &presence) {
+			return QVariantMap{ { "name", name }, { "role", owner ? "owner" : "member" }, { "added", 1795103023 }, { "me", is_me },
+				{ "friend", is_friend }, { "presence", presence } };
+		};
+		const QVariantMap mine = testPresence("online", "", "", false, -1);
+		list << QVariantMap{ { "id", -1 }, { "name", "Hafta sonu" }, { "owner", me }, { "mine", true }, { "created", 1795103023 },
+			{ "members", QVariantList{
+				member(me, true, true, false, mine),
+				member("ayse", false, false, true, testPresence("playing", "Astro Bot", "mehmet", false, 25 * 60)),
+				member("mehmet", false, false, true, testPresence("playing", "GTA VI", "", true, 70 * 60)),
+				member("can", false, false, true, testPresence("online", "", "", false, -1)),
+				member("umut", false, false, false, testPresence("offline", "", "", false, -1)) } } };
+		list << QVariantMap{ { "id", -2 }, { "name", "Gece ekibi" }, { "owner", "mehmet" }, { "mine", false }, { "created", 1795104399 },
+			{ "members", QVariantList{
+				member("mehmet", true, false, true, testPresence("playing", "GTA VI", "", true, 70 * 60)),
+				member(me, false, true, false, mine),
+				member("zeynep", false, false, true, testPresence("offline", "", "", false, 2 * 3600 + 300)),
+				member("selin", false, false, false, testPresence("online", "", "", false, -1)) } } };
+	}
+	else
+		list = group_list.toVariantList();
+	// Members' presence always complete; how many of the others play now, for the list
+	for(QVariant &v : list)
+	{
+		QVariantMap g = v.toMap();
+		QVariantList members = g.value("members").toList();
+		int playing = 0;
+		for(QVariant &m : members)
+		{
+			QVariantMap member = m.toMap();
+			member["presence"] = presenceOf(member);
+			if(!member.value("me").toBool() && member.value("presence").toMap().value("state").toString() == "playing")
+				playing++;
+			m = member;
+		}
+		g["members"] = members;
+		g["playing"] = playing;
+		v = g;
+	}
+	if(!test_mode)
+	{
+		cached_groups = std::move(list);
+		cache_groups = true;
+		return cached_groups;
+	}
+	return list;
+}
+
+QVariantMap OvioraServer::group(int id) const
+{
+	for(const QVariant &v : groups())
+		if(v.toMap().value("id").toInt() == id)
+			return v.toMap();
+	return {};
+}
+
+QString OvioraServer::presenceText(const QVariantMap &presence, bool hideNames) const
+{
+	const QString state = presence.value("state").toString();
+	const qint64 since = presence.value("since").toLongLong();
+	const qint64 now = QDateTime::currentSecsSinceEpoch();
+	if(state == "playing")
+	{
+		const QString game = presence.value("game").toString().simplified();
+		const QString host = presence.value("host").toString().simplified();
+		QString line;
+		if(presence.value("own").toBool())
+			line = game.isEmpty() ? tr("Kendi PS5'inde oynuyor") : tr("Kendi PS5'inde oynuyor: %1").arg(game);
+		else
+		{
+			line = game.isEmpty() ? tr("Oynuyor") : tr("Oynuyor: %1").arg(game);
+			if(!host.isEmpty())
+			{
+				QString where;
+				if(hideNames)
+					where = tr("Bir arkadaşının PS5'inde");
+				else
+				{
+					// Turkish (the source text): the suffix follows the name's vowels; other languages as translated
+					const QString pattern = tr("%1'in PS5'inde");
+					where = pattern == QStringLiteral("%1'in PS5'inde")
+						? DiscordPresence::turkishGenitive(host) + QStringLiteral(" PS5'inde") : pattern.arg(host);
+				}
+				line += QStringLiteral(" · ") + where;
+			}
+		}
+		// How long already: "1 sa 20 dk", "45 dk" (the home's session lengths)
+		if(since > 0 && now > since)
+		{
+			const qint64 m = qMax<qint64>(1, (now - since) / 60);
+			const qint64 h = m / 60;
+			line += QStringLiteral(" · ") + (h > 0 ? (m % 60 ? tr("%1 sa %2 dk").arg(h).arg(m % 60) : tr("%1 sa").arg(h)) : tr("%1 dk").arg(m));
+		}
+		return line;
+	}
+	if(state == "online")
+		return tr("Çevrimiçi");
+	if(since <= 0 || now < since)
+		return tr("Çevrimdışı");
+	// Last seen: "az önce", "12 dk önce", "2 sa önce", "3 gün önce"
+	const qint64 ago = now - since;
+	QString when;
+	if(ago < 60)
+		when = tr("az önce");
+	else if(ago < 3600)
+		when = tr("%1 dk önce").arg(ago / 60);
+	else if(ago < 86400)
+		when = tr("%1 sa önce").arg(ago / 3600);
+	else
+		when = tr("%1 gün önce").arg(ago / 86400);
+	return tr("Çevrimdışı") + QStringLiteral(" · ") + when;
+}
+
+void OvioraServer::fetchGroups()
+{
+	if(groups_busy || groups_unsupported || token.isEmpty())
+		return;
+	groups_busy = true;
+	const quint64 gen = auth_gen;
+	post("groups", {}, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
+		groups_busy = false;
+		if(!error.isEmpty())
+		{
+			// A server from before friend groups: stop asking until the next sign-in
+			const int status = r.value("http_status").toInt();
+			if((status == 400 || status == 404) && !r.value("relogin").toBool())
+				groups_unsupported = true;
+			return;
+		}
+		takeGroups(r);
+	});
+}
+
+void OvioraServer::refreshGroups(std::function<void()> then)
+{
+	if(!signedIn() || groups_unsupported)
+	{
+		if(then)
+			then();
+		return;
+	}
+	const quint64 gen = auth_gen;
+	post("groups", {}, [this, gen, then](const QJsonObject &r, const QString &error) {
+		if(gen == auth_gen && error.isEmpty())
+			takeGroups(r);
+		if(then)
+			then();
+	});
+}
+
+void OvioraServer::takeGroups(const QJsonObject &r)
+{
+	if(!r.contains("groups"))
+		return;
+	const QJsonArray next_groups = r.value("groups").toArray();
+	const int next_max = r.value("groups_max").toInt(20);
+	const int next_members_max = r.value("group_members_max").toInt(20);
+	// Every groups view that came counts (MessageCenter waits for one), changed or not
+	emit groupsTaken();
+	if(groups_loaded && group_list == next_groups && groups_max == next_max && group_members_max == next_members_max)
+		return;
+	group_list = next_groups;
+	groups_max = next_max;
+	group_members_max = next_members_max;
+	groups_loaded = true;
+	cache_groups = false;
+	emit groupsChanged();
+}
+
+void OvioraServer::groupCall(const QString &action, QJsonObject body, const QString &fail_title)
+{
+	// The made-up groups of --test-groups (ids below 1) never reach the server
+	if(!signedIn() || (body.contains("id") && body.value("id").toInt() <= 0))
+		return;
+	const quint64 gen = auth_gen;
+	post(action, body, [this, gen, action, fail_title](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
+		if(!error.isEmpty())
+		{
+			emit message(fail_title, error);
+			fetchGroups();
+			return;
+		}
+		takeGroups(r);
+		if(action == "group_create")
+			emit groupCreated(r.value("group").toInt());
+	});
+}
+
+void OvioraServer::groupCreate(const QString &name, const QStringList &members)
+{
+	QJsonArray list;
+	for(const QString &m : members)
+		list.append(m);
+	if(!name.simplified().isEmpty())
+		groupCall("group_create", { { "name", name.simplified() }, { "members", list } }, tr("Grup kurulamadı"));
+}
+
+void OvioraServer::groupRename(int id, const QString &name)
+{
+	if(!name.simplified().isEmpty())
+		groupCall("group_rename", { { "id", id }, { "name", name.simplified() } }, tr("Grubun adı değiştirilemedi"));
+}
+
+void OvioraServer::groupAdd(int id, const QString &name)
+{
+	groupCall("group_add", { { "id", id }, { "name", name } }, tr("Gruba eklenemedi"));
+}
+
+void OvioraServer::groupRemove(int id, const QString &name)
+{
+	groupCall("group_remove", { { "id", id }, { "name", name } },
+		name.compare(user_name, Qt::CaseInsensitive) == 0 ? tr("Gruptan ayrılınamadı") : tr("Gruptan çıkarılamadı"));
+}
+
+void OvioraServer::groupDelete(int id)
+{
+	groupCall("group_delete", { { "id", id } }, tr("Grup silinemedi"));
+}
+
 void OvioraServer::setShare(const QString &duid, const QString &friend_name, bool on)
 {
-	accountCall("share", { { "duid", duid }, { "friend", friend_name }, { "on", on } }, tr("Paylaşım değiştirilemedi"));
+	// --test-psn-links' made-up PS5s are only on screen
+	if(test_psn_links && duid.startsWith(QLatin1String("test-")))
+		return;
+	const quint64 gen = auth_gen;
+	post("share", { { "duid", duid }, { "friend", friend_name }, { "on", on } }, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
+		if(!error.isEmpty())
+		{
+			emit message(tr("Paylaşım değiştirilemedi"), error);
+			emit consolesChanged();	// the switch in shareConsoles goes back to the server's state
+			return;
+		}
+		takeAccount(r);
+	});
 }
 
 void OvioraServer::kick(const QString &sid)
@@ -798,12 +1504,27 @@ void OvioraServer::connectTo(const QString &host, const QString &duid)
 {
 	if(session_state != "idle" || account_status != "active")
 		return;
-	session_id = QString::fromLatin1(QCryptographicHash::hash(QByteArray::number(QDateTime::currentMSecsSinceEpoch()) + QByteArray::number(QRandomGenerator::global()->generate64()), QCryptographicHash::Sha1).toHex().left(16));
+	// --test-psn-links' made-up PS5s are only on screen
+	if(test_psn_links && duid.startsWith(QLatin1String("test-")))
+		return;
 	session_host = host;
 	session_duid = duid;
 	setSession("asking");
-	// "relay": this app can let the server make the PSN requests (S2): the owner's token never comes here
-	post("lease", { { "host", host }, { "duid", duid }, { "sid", session_id }, { "relay", 1 } }, [this](const QJsonObject &r, const QString &error) {
+	lease(false);
+}
+
+void OvioraServer::lease(bool retry)
+{
+	session_id = QString::fromLatin1(QCryptographicHash::hash(QByteArray::number(QDateTime::currentMSecsSinceEpoch()) + QByteArray::number(QRandomGenerator::global()->generate64()), QCryptographicHash::Sha1).toHex().left(16));
+	// "relay": this app can let the server make the PSN requests (S2): the owner's token never comes here.
+	// The server picks the PSN account the PS5 is on (several can be linked): account_id and token are that one's.
+	post("lease", { { "host", session_host }, { "duid", session_duid }, { "sid", session_id }, { "relay", 1 } }, [this, retry](const QJsonObject &r, const QString &error) {
+		// 409: the PS5 moved to another of the owner's PSN accounts during the lease; once more
+		if(!error.isEmpty() && !retry && r.value("http_status").toInt() == 409)
+		{
+			lease(true);
+			return;
+		}
 		if(!error.isEmpty() || r.value("mode").toString() != "psn")
 		{
 			setSession("idle");
@@ -877,9 +1598,26 @@ QString OvioraServer::hashFile(const QString &path)
 	return hash;
 }
 
+// The GitHub releases of Oviora: each carries oviora-surum.json signed with this key (its secret half
+// never leaves the publisher's PC), the pack the files are taken from by byte range, the zip and the APK
+static const char GITHUB_RELEASES[] = "https://api.github.com/repos/GamersSword/oviora/releases/latest";
+static const char GITHUB_PUBLISHER[] = "gIPS8/xYzh2GyK9ylmrHXf2oA+sHSCJeLGM1So4LhAM=";
+
+static QString githubReleasesUrl()
+{
+	// Tests point this at a local copy of the API
+	const QString test = qEnvironmentVariable("OVIORA_TEST_GITHUB_API");
+	return test.isEmpty() ? QString::fromLatin1(GITHUB_RELEASES) : test;
+}
+
 bool OvioraServer::verifySignature(const QByteArray &manifest, const QByteArray &signature) const
 {
-	QByteArray pub = QByteArray::fromBase64(publisher_pub.toLatin1());
+	return verifySignatureWith(publisher_pub, manifest, signature);
+}
+
+bool OvioraServer::verifySignatureWith(const QString &publicKey, const QByteArray &manifest, const QByteArray &signature)
+{
+	QByteArray pub = QByteArray::fromBase64(publicKey.toLatin1());
 	if(pub.size() != 32 || signature.size() != 64)
 		return false;
 	EVP_PKEY *key = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr, reinterpret_cast<const unsigned char *>(pub.constData()), 32);
@@ -899,11 +1637,73 @@ void OvioraServer::checkUpdate()
 	if(!configured() || token.isEmpty() || account_status != "active" || update_state == "downloading" || update_state == "ready")
 		return;
 	// Testing a build that is not on the site yet: it must not replace itself with the site's one
-	if(qEnvironmentVariableIsSet("YAKAMOZ_TEST_GUNCELLEME_YOK"))
+	if(qEnvironmentVariableIsSet("YAKAMOZ_TEST_GUNCELLEME_YOK") || test_github_update)
 		return;
 	update_state = "checking";
 	update_text = tr("Güncelleme denetleniyor…");
 	emit updateChanged();
+	githubCheckUpdate();
+}
+
+void OvioraServer::githubCheckUpdate()
+{
+	auto get = [this](const QUrl &url, bool api) {
+		QNetworkRequest req(url);
+		req.setRawHeader("User-Agent", "Oviora");
+		if(api)
+			req.setRawHeader("Accept", "application/vnd.github+json");
+		req.setTransferTimeout(30000);
+		return net->get(req);
+	};
+	QNetworkReply *reply = get(QUrl(githubReleasesUrl()), true);
+	connect(reply, &QNetworkReply::finished, this, [this, reply, get]() {
+		reply->deleteLater();
+		const QJsonObject release = QJsonDocument::fromJson(reply->readAll()).object();
+		QHash<QString, QString> assets;
+		for(const QJsonValue &v : release.value("assets").toArray())
+			assets.insert(v.toObject().value("name").toString(), v.toObject().value("browser_download_url").toString());
+		if(reply->error() != QNetworkReply::NoError || !assets.contains("oviora-surum.json") || !assets.contains("oviora-surum.sig"))
+		{
+			qCWarning(yakamozServer) << "GitHub release not available:" << reply->errorString() << "- asking the server";
+			return serverCheckUpdate();
+		}
+		QNetworkReply *json = get(QUrl(assets.value("oviora-surum.json")), false);
+		QNetworkReply *sig = get(QUrl(assets.value("oviora-surum.sig")), false);
+		auto pending = std::make_shared<int>(2);
+		auto done = [this, json, sig, assets, pending]() {
+			if(--*pending)
+				return;
+			json->deleteLater();
+			sig->deleteLater();
+			const QByteArray manifest = json->readAll();
+			if(json->error() != QNetworkReply::NoError || sig->error() != QNetworkReply::NoError)
+			{
+				qCWarning(yakamozServer) << "GitHub release manifest not downloaded:" << json->errorString() << sig->errorString();
+				return serverCheckUpdate();
+			}
+			if(!verifySignatureWith(QString::fromLatin1(GITHUB_PUBLISHER), manifest, QByteArray::fromBase64(sig->readAll().trimmed())))
+			{
+				// Not signed by the publisher: whoever changed the release, nothing of it is installed
+				update_state = "error";
+				update_text = tr("Güncellemenin imzası doğrulanamadı, kurulmadı.");
+				emit updateChanged();
+				qCWarning(yakamozServer) << "GitHub update signature rejected";
+				return;
+			}
+			const QJsonObject m = QJsonDocument::fromJson(manifest).object();
+			const QString pack = assets.value(m.value("pack").toString());
+			if(pack.isEmpty())
+				return serverCheckUpdate();
+			qCInfo(yakamozServer) << "GitHub release" << m.value("version").toString();
+			takeManifest(manifest, m.value("version").toString(), m.value("notes").toString(), pack);
+		};
+		connect(json, &QNetworkReply::finished, this, done);
+		connect(sig, &QNetworkReply::finished, this, done);
+	});
+}
+
+void OvioraServer::serverCheckUpdate()
+{
 	post("update", { { "version", installedVersion() } }, [this](const QJsonObject &r, const QString &error) {
 		if(!error.isEmpty() || r.value("none").toBool())
 		{
@@ -922,10 +1722,18 @@ void OvioraServer::checkUpdate()
 			qCWarning(yakamozServer) << "Update signature rejected";
 			return;
 		}
-		update_version = r.value("version").toString();
-		update_notes = r.value("notes").toString();
+		takeManifest(manifest, r.value("version").toString(), r.value("notes").toString(), QString());
+	});
+}
+
+void OvioraServer::takeManifest(const QByteArray &manifest, const QString &version, const QString &notes, const QString &packUrl)
+{
+	update_version = version;
+	update_notes = notes;
 #ifndef OVIORA_PLATFORM_UPDATES
-		// Development build: never download or install the server's release (the old Oviora)
+	// Development build: never download or install the published release
+	if(!test_github_update)
+	{
 		dev_server_version = update_version;
 		update_state = "none";
 		update_text = tr("Sunucudaki sürüm: %1 (bu derlemede güncelleme kapalı).").arg(update_version);
@@ -936,73 +1744,76 @@ void OvioraServer::checkUpdate()
 		}
 		emit updateChanged();
 		return;
+	}
 #endif
-		QList<UpdateFile> files;
-		for(const QJsonValue &v : QJsonDocument::fromJson(manifest).object().value("files").toArray())
+	gh_pack_url = packUrl;
+	QList<UpdateFile> files;
+	for(const QJsonValue &v : QJsonDocument::fromJson(manifest).object().value("files").toArray())
+	{
+		QJsonObject f = v.toObject();
+		QString path = f.value("path").toString();
+		// Never outside the program folder
+		if(path.isEmpty() || path.contains("..") || path.contains('\\') || path.contains(':') || QDir::isAbsolutePath(path))
+			continue;
+		files.append({ path, f.value("sha256").toString(), qint64(f.value("size").toDouble()),
+			f.contains("offset") ? qint64(f.value("offset").toDouble()) : -1, qint64(f.value("csize").toDouble()) });
+	}
+	// Which files differ from what is installed (hashing runs off the UI thread)
+	auto watcher = new QFutureWatcher<QList<UpdateFile>>(this);
+	connect(watcher, &QFutureWatcher<QList<UpdateFile>>::finished, this, [this, watcher, files]() {
+		watcher->deleteLater();
+		update_files = files;
+		update_queue = watcher->result();
+		qCInfo(yakamozServer) << "Update" << update_version << "files" << files.size() << "to download" << update_queue.size();
+		update_bytes_total = 0;
+		update_bytes_done = 0;
+		for(const UpdateFile &f : update_queue)
+			update_bytes_total += f.size;
+		if(update_queue.isEmpty())
 		{
-			QJsonObject f = v.toObject();
-			QString path = f.value("path").toString();
-			// Never outside the program folder
-			if(path.isEmpty() || path.contains("..") || path.contains('\\') || path.contains(':') || QDir::isAbsolutePath(path))
-				continue;
-			files.append({ path, f.value("sha256").toString(), qint64(f.value("size").toDouble()) });
-		}
-		// Which files differ from what is installed (hashing runs off the UI thread)
-		auto watcher = new QFutureWatcher<QList<UpdateFile>>(this);
-		connect(watcher, &QFutureWatcher<QList<UpdateFile>>::finished, this, [this, watcher, files]() {
-			watcher->deleteLater();
-			update_files = files;
-			update_queue = watcher->result();
-			update_bytes_total = 0;
-			update_bytes_done = 0;
-			for(const UpdateFile &f : update_queue)
-				update_bytes_total += f.size;
-			if(update_queue.isEmpty())
+			bool staged = QDir(stageDir()).exists() && !QDir(stageDir()).isEmpty();
+			if(staged)
 			{
-				bool staged = QDir(stageDir()).exists() && !QDir(stageDir()).isEmpty();
-				if(staged)
-				{
-					update_state = "ready";
-					update_text = tr("Sürüm %1 hazır, yeniden başlatınca kurulur.").arg(update_version);
-					emit updateChanged();
-					emit updateReady();
-					return;
-				}
-				APP_SETTINGS(s);
-				s.setValue(QString(GROUP) + "/installed_version", update_version);
-				update_state = "none";
-				update_text = tr("Oviora güncel (sürüm %1).").arg(update_version);
+				update_state = "ready";
+				update_text = tr("Sürüm %1 hazır, yeniden başlatınca kurulur.").arg(update_version);
 				emit updateChanged();
-				// The files already were the current ones: the server knows it from the next request
-				if(update_required)
-					refresh();
+				emit updateReady();
 				return;
 			}
-			update_state = "downloading";
+			APP_SETTINGS(s);
+			s.setValue(QString(GROUP) + "/installed_version", update_version);
+			update_state = "none";
+			update_text = tr("Oviora güncel (sürüm %1).").arg(update_version);
 			emit updateChanged();
-			downloadNext();
-		});
-		QString app = appDir(), stage = stageDir();
-		watcher->setFuture(QtConcurrent::run([this, files, app, stage]() {
-			QList<UpdateFile> todo;
-			for(const UpdateFile &f : files)
-			{
-				// The starter for copies with the old program; this one needs nothing of it
-				if(f.path.compare(OLD_APP_EXE, Qt::CaseInsensitive) == 0 && QFileInfo::exists(app + "/" + APP_EXE))
-					continue;
-				// Optional components come only to those who installed them (Ayarlar -> Goruntu)
-				const QString component = componentOf(f.path);
-				if(!component.isEmpty() && !componentInstalled(component))
-					continue;
-				if(hashFile(app + "/" + f.path) == f.sha256)
-					continue;
-				if(hashFile(stage + "/" + f.path) == f.sha256)
-					continue;  // downloaded earlier, waiting for the restart
-				todo.append(f);
-			}
-			return todo;
-		}));
+			// The files already were the current ones: the server knows it from the next request
+			if(update_required)
+				refresh();
+			return;
+		}
+		update_state = "downloading";
+		emit updateChanged();
+		downloadNext();
 	});
+	QString app = appDir(), stage = stageDir();
+	watcher->setFuture(QtConcurrent::run([this, files, app, stage]() {
+		QList<UpdateFile> todo;
+		for(const UpdateFile &f : files)
+		{
+			// The starter for copies with the old program; this one needs nothing of it
+			if(f.path.compare(OLD_APP_EXE, Qt::CaseInsensitive) == 0 && QFileInfo::exists(app + "/" + APP_EXE))
+				continue;
+			// Optional components come only to those who installed them (Ayarlar -> Goruntu)
+			const QString component = componentOf(f.path);
+			if(!component.isEmpty() && !componentInstalled(component))
+				continue;
+			if(hashFile(app + "/" + f.path) == f.sha256)
+				continue;
+			if(hashFile(stage + "/" + f.path) == f.sha256)
+				continue;  // downloaded earlier, waiting for the restart
+			todo.append(f);
+		}
+		return todo;
+	}));
 }
 
 void OvioraServer::downloadNext()
@@ -1026,6 +1837,52 @@ void OvioraServer::downloadNext()
 		update_state = "error";
 		update_text = tr("Güncelleme dosyası yazılamadı: %1").arg(f.path);
 		emit updateChanged();
+		return;
+	}
+	if(f.offset >= 0 && f.csize > 4 && !gh_pack_url.isEmpty())
+	{
+		// The file's block of the GitHub release pack: qCompress data, the hash checked after unpacking
+		QNetworkRequest req{QUrl(gh_pack_url)};
+		req.setRawHeader("User-Agent", "Oviora");
+		req.setRawHeader("Range", QByteArray("bytes=") + QByteArray::number(f.offset) + '-' + QByteArray::number(f.offset + f.csize - 1));
+		req.setTransferTimeout(60000);
+		download = net->get(req);
+		auto block = std::make_shared<QByteArray>();
+		const qint64 doneBefore = update_bytes_done;
+		connect(download, &QNetworkReply::readyRead, this, [this, block, f, doneBefore]() {
+			block->append(download->readAll());
+			if(block->size() > f.csize)
+				return download->abort();  // a server ignoring Range sends the whole pack
+			update_bytes_done = doneBefore + f.size * block->size() / std::max<qint64>(1, f.csize);
+			update_progress = update_bytes_total ? double(update_bytes_done) / double(update_bytes_total) : 0;
+			update_text = tr("Güncelleme indiriliyor: %1 / %2 MB").arg(update_bytes_done / 1048576).arg(update_bytes_total / 1048576);
+			emit updateChanged();
+		});
+		connect(download, &QNetworkReply::finished, this, [this, block, f, target, doneBefore]() {
+			download->deleteLater();
+			block->append(download->readAll());
+			const int status = download->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+			QByteArray data = download->error() == QNetworkReply::NoError && status == 206 && block->size() == f.csize ? qUncompress(*block) : QByteArray();
+			block->clear();
+			if(data.size() != f.size || QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex()) != f.sha256 ||
+				download_file->write(data) != data.size() || !download_file->flush())
+			{
+				qCWarning(yakamozServer) << "Update block failed:" << f.path << "http" << status << download->errorString();
+				download_file->close();
+				download_file->remove();
+				update_bytes_done = doneBefore;
+				update_state = "error";
+				update_text = tr("Güncelleme indirilemedi (%1), sonra tekrar denenecek.").arg(f.path);
+				emit updateChanged();
+				return;
+			}
+			download_file->close();
+			update_bytes_done = doneBefore + f.size;
+			QFile::remove(target);
+			download_file->rename(target);
+			update_queue.removeFirst();
+			downloadNext();
+		});
 		return;
 	}
 	QUrl url(server_url);
@@ -1296,7 +2153,10 @@ void OvioraServer::fetchEvents()
 	}
 	const qint64 since = first ? QDateTime::currentMSecsSinceEpoch() - 7LL * 24 * 3600 * 1000 : events_last;
 	events_busy = true;
-	post("events", { { "since", double(since) } }, [this, announce_after](const QJsonObject &r, const QString &error) {
+	const quint64 gen = auth_gen;
+	post("events", { { "since", double(since) } }, [this, gen, announce_after](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		events_busy = false;
 		if(!error.isEmpty())
 		{
@@ -1312,7 +2172,8 @@ void OvioraServer::fetchEvents()
 			// Nothing seen before on this PC: listed, not announced
 			takeEvent(e, announce_after >= 0 && qint64(e.value("id").toDouble()) > announce_after);
 		}
-		if(r.contains("last"))
+		// The settings file is written on the UI thread: only when the newest event changed
+		if(r.contains("last") && qint64(r.value("last").toDouble()) != events_last)
 		{
 			events_last = qint64(r.value("last").toDouble());
 			APP_SETTINGS(s);
@@ -1349,6 +2210,18 @@ void OvioraServer::takeEvent(const QJsonObject &e, bool announce)
 	{
 		title = tr("PS5 boşaldı");
 		text = tr("%1 (%2) artık boşta, bağlanabilirsin.").arg(eventField(e, "console"), eventField(e, "owner"));
+	}
+	else if(type == "group_added")
+	{
+		title = tr("Yeni grup");
+		text = tr("%1 seni %2 grubuna ekledi.").arg(eventField(e, "by"), eventField(e, "group_name"));
+		// The new group in the list (and its members' keys for messages) at once
+		fetchGroups();
+	}
+	else if(type == "izlet")
+	{
+		title = tr("Canlı yayın");
+		text = tr("%1, %2 adlı PS5'inde oynadığını izletiyor: oviora.tr/izle.php").arg(eventField(e, "owner"), eventField(e, "console"));
 	}
 	else if(type == "kicked")
 	{
@@ -1413,7 +2286,13 @@ void OvioraServer::takeEvent(const QJsonObject &e, bool announce)
 
 void OvioraServer::setQueue(const QString &duid, bool on)
 {
-	post("queue", { { "duid", duid }, { "on", on } }, [this, on](const QJsonObject &r, const QString &error) {
+	// --test-psn-links' made-up PS5s are only on screen
+	if(test_psn_links && duid.startsWith(QLatin1String("test-")))
+		return;
+	const quint64 gen = auth_gen;
+	post("queue", { { "duid", duid }, { "on", on } }, [this, gen, on](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen)
+			return;
 		if(!error.isEmpty())
 		{
 			emit message(on ? tr("Sıraya girilemedi") : tr("Sıradan çıkılamadı"), error);

@@ -30,7 +30,8 @@
 
 #define SESSION_EXPECT_TIMEOUT_MS		5000
 
-#define SESSION_EXPECT_CTRL_START_MS    10000
+// Oviora: 20 s (was 10): the ctrl requests now wait up to 3 s per try for a far console (rudp.c RUDP_TRY_WAIT_MS)
+#define SESSION_EXPECT_CTRL_START_MS    20000
 
 static void *session_thread_func(void *arg);
 static void regist_cb(ChiakiRegistEvent *event, void *user);

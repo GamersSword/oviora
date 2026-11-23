@@ -8,6 +8,10 @@ class StreamRecovery {
 public:
     enum class Action {Wait,Keyframe,Reconnect,Fail};
     void beginAttempt(int64_t now){lastProgress_=now;healthySince_=-1;keyframes_=0;currentVideo_=false;}
+    // Oviora: a connecting step reached (PSN data hole, opening) restarts the first-picture wait. It used to
+    // count from the click, so a PSN connection whose hole punching took 20+ s was given up at 30 s just
+    // before its picture came (field reports 2026-11-18/19: "0 / 0", stage "opening" at the cut).
+    void handshakeProgress(int64_t now){if(!currentVideo_)lastProgress_=now;}
     bool frame(int64_t now){
         if(!currentVideo_||healthySince_<0||now<lastProgress_||now-lastProgress_>=1000)healthySince_=now;
         lastProgress_=now;keyframes_=0;everVideo_=currentVideo_=true;

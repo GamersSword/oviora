@@ -229,6 +229,8 @@ Window {
                 onRequestSettings: root.goPage("set")
                 onRequestManualHost: oviora.openPs5Dialog()
                 onConnectionStarted: fn => root.lastConnect = fn
+                // Over the stream a friend's message shows on the picture (messageToast) instead
+                streamShown: root.page === "min"
             }
         }
         MinimalPage {
@@ -257,6 +259,8 @@ Window {
                     OvioraSettings {
                         onCloseRequested: root.goPage("home")
                         onPsnLinkRequested: { root.goPage("home"); ovHome.showPsnLinkDialog() }
+                        // --test-psn-links' made-up accounts (ids below 0) never reach Sony or the server
+                        onPsnWideRequested: (link, name) => { if (link > 0) { root.goPage("home"); ovHome.showPsnWideDialog(link, name) } }
                     }
                 }
             }
@@ -618,6 +622,26 @@ Window {
         enabled: oviora.hasSource
         onActivated: root.ensureStreamMenu().toggle()
     }
+    // Ctrl+Enter: the messages straight away while playing (the conversation of a message just shown, if any);
+    // again from the chat back to the game. Ctrl combinations never go to the PS5
+    Shortcut {
+        sequences: ["Ctrl+Return", "Ctrl+Enter"]
+        enabled: oviora.hasSource
+        onActivated: {
+            const sm = root.ensureStreamMenu()
+            if (root.streamMenuShown && sm.chatShown) {
+                sm.hide()
+            } else if (messageToast.shown && messageToast.group) {
+                messageToast.shown = false
+                sm.openGroupChat(messageToast.group)
+            } else if (messageToast.shown && messageToast.from !== "") {
+                messageToast.shown = false
+                sm.openChat(messageToast.from)
+            } else {
+                sm.openChat("")
+            }
+        }
+    }
     // The pad's combination (Ayarlar → Genel → Yayın menüsü) opens and closes it too
     Connections {
         target: oviora
@@ -825,6 +849,7 @@ Window {
     property string accountStatusSeen: ""
     Connections {
         target: typeof platform !== "undefined" ? platform : null
+        Component.onCompleted: if (typeof platform !== "undefined" && platform) root.accountStatusSeen = platform.status
         function onAccountDeleted() {
             if (root.page === "set")
                 root.goPage("home")
@@ -832,7 +857,7 @@ Window {
         }
         // Signed out (Ayarlar > Hesap > Oturumu kapat, or the token was revoked): the sign-in screen
         // is on the home page, so an open settings page must not stay over it
-        function onAccountChanged() {
+        function onChanged() {
             const was = root.accountStatusSeen
             root.accountStatusSeen = platform.status
             // Only a change to signed out, not the first report at start (--page set test runs)
@@ -1106,6 +1131,114 @@ Window {
             }
         }
     }
+    // Packet loss above 3% for 10 s in a row: a short note how to help it, in the bottom-left
+    // corner for 6 s, at most once every 5 minutes. Beside the weak-link pill, which only says
+    // how bad the line is.
+    Rectangle {
+        id: lossNote
+        objectName: "loss-note"
+        readonly property bool lossy: root.liveOnScreen && (root.liveStats.packetLoss || 0) > 0.03
+        property bool shown: false
+        property real lossShown: 0
+        property double lastShown: 0
+        // --dialog lossnote (test runs) shows it without a lossy line
+        property bool forced: false
+        function show(loss) {
+            lossShown = loss
+            lastShown = Date.now()
+            shown = true
+            lossNoteHide.restart()
+            oviora.logUi("ui-loss-note", "shown at " + (loss * 100).toFixed(1) + "% loss")
+        }
+        // Runs while the loss stays high: the first tick is 10 s after it went up
+        Timer {
+            interval: 10000
+            repeat: true
+            running: lossNote.lossy
+            onTriggered: if (Date.now() - lossNote.lastShown >= 300000) lossNote.show(root.liveStats.packetLoss || 0)
+        }
+        Timer { id: lossNoteHide; interval: 6000; onTriggered: if (!lossNote.forced) lossNote.shown = false }
+        readonly property bool videoCover: visible
+        property real coverRadius: radius
+        z: 26
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 32
+        anchors.bottomMargin: 32
+        width: Math.min(lossNoteText.implicitWidth + 36, parent.width - 64)
+        height: 40
+        radius: 20
+        color: Qt.rgba(0.05, 0.05, 0.07, 0.9)
+        border.width: 1
+        border.color: Tema.line
+        opacity: shown && (root.liveOnScreen || forced) ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        Text {
+            id: lossNoteText
+            textFormat: Text.PlainText
+            anchors.centerIn: parent
+            width: Math.min(implicitWidth, lossNote.width - 36)
+            elide: Text.ElideRight
+            text: qsTr("Bağlantıda kayıp var (%1). PS5'i kabloyla bağlamak yardımcı olur.").arg("%" + Math.max(1, Math.round(lossNote.lossShown * 100)))
+            font.family: Tema.body
+            font.pixelSize: 14
+            color: Tema.text
+        }
+    }
+    // A 30 fps internet stream (the "Uzak bağlantı" default): once ever, a hint that frame
+    // generation can show it at 60. Only when this PC runs an FG and the user has not turned an
+    // FG stage off; never switched on by itself (it changes the user's chain and adds a frame
+    // of latency).
+    Rectangle {
+        id: fgHint
+        objectName: "fg-hint"
+        readonly property bool wanted: root.liveOnScreen && root.liveStats.internet === true && root.liveStats.requestedFps === 30
+            && root.liveStats.fgOn !== true && root.liveStats.fgSupported === true && root.liveStats.fgTurnedOff !== true
+            && !(oviora.preferences && oviora.preferences.fgHintShown === true)
+        property bool shown: false
+        // --dialog fghint (test runs) shows it without a stream
+        property bool forced: false
+        // A few seconds into the stream, after the connecting screen
+        Timer {
+            interval: 8000
+            running: fgHint.wanted && !fgHint.shown
+            onTriggered: {
+                fgHint.shown = true
+                fgHintHide.restart()
+                oviora.setPreference("fgHintShown", true)
+                oviora.logUi("ui-fg-hint", "shown once: 30 fps internet stream, frame generation off")
+            }
+        }
+        Timer { id: fgHintHide; interval: 9000; onTriggered: if (!fgHint.forced) fgHint.shown = false }
+        readonly property bool videoCover: visible
+        property real coverRadius: radius
+        z: 26
+        anchors.left: parent.left
+        anchors.bottom: lossNote.visible ? lossNote.top : parent.bottom
+        anchors.leftMargin: 32
+        anchors.bottomMargin: lossNote.visible ? 10 : 32
+        width: Math.min(fgHintText.implicitWidth + 36, parent.width - 64)
+        height: 40
+        radius: 20
+        color: Qt.rgba(0.05, 0.05, 0.07, 0.9)
+        border.width: 1
+        border.color: Tema.line
+        opacity: shown && (root.liveOnScreen || forced) ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        Text {
+            id: fgHintText
+            textFormat: Text.PlainText
+            anchors.centerIn: parent
+            width: Math.min(implicitWidth, fgHint.width - 36)
+            elide: Text.ElideRight
+            text: qsTr("30 fps'yi 60'a çıkarmak için Kare üretimi'ni aç (Ctrl+O › Görüntü ayarları)")
+            font.family: Tema.body
+            font.pixelSize: 14
+            color: Tema.text
+        }
+    }
     // Tuşlar → Fareyle nişan alma: a short note when the pointer is captured or let go (old StreamView)
     Rectangle {
         id: mouseAimHint
@@ -1161,6 +1294,114 @@ Window {
             }
         }
     }
+    // A friend's message while the stream's picture is shown (MessageCenter.incoming, only for a
+    // conversation not open): a small card in the top-right corner, cut out of the video window like
+    // the other notices. A click opens the stream menu on that conversation (Ctrl+O › Mesajlar).
+    // The home's own toast stays quiet meanwhile (OvioraHome.streamShown).
+    Rectangle {
+        id: messageToast
+        objectName: "message-toast"
+        property string from: ""
+        property string preview: ""
+        // A group's message: its id and name ("Grup adı · gönderen" on top); 0 for a friend's
+        property int group: 0
+        property string groupName: ""
+        property bool shown: false
+        // --dialog messagetoast (test runs) shows it without a stream
+        property bool forced: false
+        // Not over the menu's own chat panel, which shows the message already
+        readonly property bool allowed: (forced || root.page === "min")
+            && !(root.streamMenuShown && streamMenuLoader.item && streamMenuLoader.item.chatShown)
+        function show(f, p, g, gn) {
+            from = f
+            group = g || 0
+            groupName = gn || ""
+            preview = (p || "").replace(/\s+/g, " ")
+            shown = true
+            messageToastTimer.restart()
+            oviora.logUi("ui-message-toast", "shown")
+        }
+        readonly property bool videoCover: visible
+        property real coverRadius: radius
+        z: 470
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: 24
+        // Under the weak-connection pill when that is up, under the statistics panel otherwise
+        anchors.topMargin: weakLink.visible ? weakLink.y + weakLink.height + 12
+            : (statsOverlay.wanted && statsOverlay.area.height > 0 ? statsOverlay.area.y + statsOverlay.area.height + 12 : 24)
+        width: Math.min(360, parent.width - 48)
+        height: messageToastColumn.implicitHeight + 28
+        radius: Tema.radiusPanel
+        color: Tema.surface
+        border.width: 1
+        border.color: messageToastArea.containsMouse ? Tema.accent : Tema.lineStrong
+        opacity: shown && allowed ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        transform: Translate {
+            x: messageToast.shown ? 0 : 18
+            Behavior on x { NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
+        }
+        Timer { id: messageToastTimer; interval: 5000; onTriggered: if (!messageToast.forced) messageToast.shown = false }
+        MouseArea {
+            id: messageToastArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            // Held while the pointer is on it, so it does not go from under a click
+            onContainsMouseChanged: if (containsMouse) messageToastTimer.stop(); else if (messageToast.shown) messageToastTimer.restart()
+            onClicked: {
+                messageToast.shown = false
+                if (messageToast.group) root.ensureStreamMenu().openGroupChat(messageToast.group)
+                else root.ensureStreamMenu().openChat(messageToast.from)
+            }
+        }
+        ColumnLayout {
+            id: messageToastColumn
+            anchors.fill: parent
+            anchors.margins: 14
+            spacing: 3
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Rectangle { implicitWidth: 8; implicitHeight: 8; radius: 4; color: Tema.accent }
+                Label {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    text: messageToast.group ? messageToast.groupName + " · " + messageToast.from : messageToast.from
+                    elide: Text.ElideRight
+                    font.family: Tema.body
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
+                    color: Tema.text
+                }
+            }
+            Label {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: messageToast.preview
+                elide: Text.ElideRight
+                maximumLineCount: 1
+                font.family: Tema.body
+                font.pixelSize: 14
+                color: Tema.muted
+            }
+            Label {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                Layout.topMargin: 3
+                text: qsTr("Cevaplamak için Ctrl+Enter")
+                font.family: Tema.body
+                font.pixelSize: 12
+                color: Tema.accentText
+            }
+        }
+    }
+    Connections {
+        target: messages
+        function onIncoming(from, preview, group, groupName) { if (root.page === "min") messageToast.show(from, preview, group, groupName) }
+    }
     Component.onCompleted: {
         startTestMask()
         applyStartupSize()
@@ -1171,6 +1412,9 @@ Window {
         if (root.test.dialog === "pair") root.openPairDialog()
         else if (root.test.dialog === "editconsole") testEditConsole.start()
         else if (root.test.dialog === "weaklink") weakLink.forced = true
+        else if (root.test.dialog === "lossnote") { lossNote.forced = true; lossNote.show(0.052) }
+        else if (root.test.dialog === "fghint") { fgHint.forced = true; fgHint.shown = true }
+        else if (root.test.dialog === "messagetoast") { messageToast.forced = true; messageToast.show("deneme", "Selam, bu akşam bir maç atalım mı? Hazır olunca haber ver.") }
         else if (root.test.dialog === "rest") testRest.start()
         else if (root.test.dialog === "update") { const n = []; n.push("Yeni açılış ve bağlanma ekranları, daha akıcı yayın", ""); for (let i = 1; i <= 18; ++i) n.push("- Deneme maddesi " + i + ": uzun bir sürüm notu satırı, ekrana sığmayacak kadar çok madde olduğunda kart kendi içinde kayar."); ovHome.updatePreview = n.join("\n") }
         else if (root.test.dialog === "psnlookup") { root.openPairDialog(); pairDialogLoader.item.startLookup() }
@@ -1180,15 +1424,18 @@ Window {
         videoHost.syncRect()
         if (root.test.fullBar !== undefined) testFullTimer.start()
     }
-    // Test runs: --dialog streammenu [--section game|picture] opens the stream menu
+    // Test runs: --dialog streammenu [--section game|picture|keys|chat] opens the stream menu
     Timer {
         id: testStreamMenu; interval: 1500
-        // --section game | picture | picture:<tab> (quality, fg, color, audio, display)
+        // --section game | settings | picture | picture:<tab> (quality, fg, color, audio, display) | sound | subs | keys | chat | chat:<friend> | chat:#<group id>
         onTriggered: {
             const sec = root.test.section || "game"
             const sm = root.ensureStreamMenu()
             sm.open()
             if (sec.indexOf("picture") === 0) sm.openPicture(sec.indexOf(":") > 0 ? sec.split(":")[1] : "quality")
+            else if (sec === "keys" || sec === "sound" || sec === "subs" || sec === "subsphone" || sec === "izlet" || sec === "settings") sm.section = sec
+            else if (sec.indexOf("chat:#") === 0) sm.openGroupChat(parseInt(sec.substring(6)))
+            else if (sec.indexOf("chat") === 0) sm.openChat(sec.indexOf(":") > 0 ? sec.substring(sec.indexOf(":") + 1) : "")
         }
     }
     // --full-bar shown|hidden: enter fullscreen with the control window held shown

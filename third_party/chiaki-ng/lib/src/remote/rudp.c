@@ -1,6 +1,7 @@
 #include <chiaki/remote/rudp.h>
 #include <chiaki/random.h>
 #include <chiaki/thread.h>
+#include <chiaki/time.h>
 #include <chiaki/remote/rudpsendbuffer.h>
 
 #include <math.h>
@@ -15,6 +16,8 @@
 #define RUDP_CONSTANT 0x244F244F
 #define RUDP_SEND_BUFFER_SIZE 16
 #define RUDP_EXPECT_TIMEOUT_MS 1000
+// Oviora: how long one try of chiaki_rudp_send_recv waits for its answer before sending the request again
+#define RUDP_TRY_WAIT_MS 3000
 typedef struct rudp_t
 {
     uint16_t counter;
@@ -494,8 +497,18 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_rudp_stop_pipe_select_single(RudpInstance *
 CHIAKI_EXPORT ChiakiErrorCode chiaki_rudp_send_recv(RudpInstance *rudp, RudpMessage *message, uint8_t *buf, size_t buf_size, uint16_t remote_counter, RudpPacketType send_type, RudpPacketType recv_type, size_t min_data_size, size_t tries)
 {
     bool success = false;
+    // Oviora: a stray packet (the console's ACK of the request, a repeat) is not the answer and not a lost try: the
+    // request is not sent again, the answer is waited for (at most 8 such packets). Each try waits up to
+    // RUDP_TRY_WAIT_MS for the answer: on a long line (field report: ACK after ~210 ms) the console acknowledged the
+    // request but its answer did not come within the old 1 s, and all three tries went by resending.
+    size_t unexpected = 0;
+    bool resend = true;
+    uint64_t sent_at = 0;
     for(int i = 0; i < tries; i++)
     {
+        if(resend)
+            sent_at = chiaki_time_now_monotonic_ms();
+        if(resend)
         switch(send_type)
         {
             case INIT_REQUEST:
@@ -516,7 +529,18 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_rudp_send_recv(RudpInstance *rudp, RudpMess
         }
         ChiakiErrorCode err = chiaki_rudp_select_recv(rudp, 1500, message);
         if(err == CHIAKI_ERR_TIMEOUT)
+        {
+            // Still within this try's wait: the answer may yet come (no resend)
+            if(chiaki_time_now_monotonic_ms() - sent_at < RUDP_TRY_WAIT_MS)
+            {
+                resend = false;
+                i--;
+                continue;
+            }
+            CHIAKI_LOGW(rudp->log, "RUDP: no answer %llu ms after the request, sending it again", (unsigned long long)(chiaki_time_now_monotonic_ms() - sent_at));
+            resend = true;
             continue;
+        }
         if(err != CHIAKI_ERR_SUCCESS)
             return err;
         bool found = true;
@@ -580,7 +604,22 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_rudp_send_recv(RudpInstance *rudp, RudpMess
             break;
         }
         if(!found)
+        {
+            CHIAKI_LOGW(rudp->log, "RUDP: packet 0x%04x/0x%02x while waiting, %llu ms after the request", (unsigned)message->type, (unsigned)message->subtype,
+                (unsigned long long)(chiaki_time_now_monotonic_ms() - sent_at));
+            if(unexpected++ < 8)
+            {
+                resend = false;
+                i--;
+            }
+            else
+                resend = true;
             continue;
+        }
+        resend = true;
+        if(i > 0 || unexpected > 0)
+            CHIAKI_LOGW(rudp->log, "RUDP: answer %llu ms after the request (try %d, %llu stray packets)",
+                (unsigned long long)(chiaki_time_now_monotonic_ms() - sent_at), i + 1, (unsigned long long)unexpected);
         if(message->data_size < min_data_size)
         {
             chiaki_rudp_message_pointers_free(message);

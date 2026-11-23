@@ -81,7 +81,7 @@ static QVariantMap defaultConfig()
         { "debugDump", false },
         { "useDictionary", true },
         { "sharedMemory", true },
-        { "intervalMs", 250 },
+        { "intervalMs", 150 },
         { "fontRel", 1.0 },
         { "boxOpacity", 92 },
         { "coverOriginal", true },
@@ -155,7 +155,7 @@ private:
     static int binarize(const QImage &gray, int threshold, bool requireOutline, QImage *out, int pad);
     static QImage minFilter(const QImage &src, int radius);
     static QRectF mapBox(const QRect &boxImg, const QString &text, const QRect &crop, double scale, int frameW, int frameH);
-    static QUrl googleUrl(bool single, const QString &text, const Params &p);
+    static QUrl googleUrl(bool single, const QString &text, const Params &p, bool gtx = false);
     static bool isOllamaNative(const QString &url) { return url.endsWith(QLatin1String("/api/chat")); }
     static QUrl localUrl(const QString &url);
 
@@ -343,8 +343,11 @@ void Worker::process(const engine::SubtitleSample &sample, const Params &p)
         }
         // ...and say what that read said, so a line that holds still is confirmed on the next
         // sample (it used to wait for the once-a-second re-read). The region is read again at
-        // least every 2 s: a subtitle fading out changes only a little per sample.
-        if (diff < qint64(bandGray.width()) * bandGray.height() / 4 / 400 && now - lastReadMs < 2000) {
+        // least every 2 s: a subtitle fading out changes only a little per sample. While the last
+        // read had text, every 450 ms: a small line leaving changes too few pixels to count, and the
+        // translation stayed up to 2 s after its English was gone
+        const qint64 maxReuseMs = hasLast && !last.text.isEmpty() ? 450 : 2000;
+        if (diff < qint64(bandGray.width()) * bandGray.height() / 4 / 400 && now - lastReadMs < maxReuseMs) {
             counters.unchanged++;
             if (hasLast)
                 emit ocrResult(last.text, frameW, frameH, last.box, last.lines, last.rows, now, last.score, false);
@@ -696,12 +699,12 @@ int Worker::binarize(const QImage &gray, int threshold, bool requireOutline, QIm
     return count;
 }
 
-QUrl Worker::googleUrl(bool single, const QString &text, const Params &p)
+QUrl Worker::googleUrl(bool single, const QString &text, const Params &p, bool gtx)
 {
     QUrl url(single ? QStringLiteral("https://translate.googleapis.com/translate_a/single")
                     : QStringLiteral("https://clients5.google.com/translate_a/t"));
     QUrlQuery q;
-    q.addQueryItem("client", "dict-chrome-ex");
+    q.addQueryItem("client", gtx ? "gtx" : "dict-chrome-ex");
     q.addQueryItem("sl", p.sourceLang.isEmpty() ? QStringLiteral("auto") : p.sourceLang);
     q.addQueryItem("tl", p.targetLang);
     if (single)
@@ -838,7 +841,8 @@ void Worker::translateRace(const QString &source, const Params &p, bool google, 
         QString lastError;
     };
     auto race = std::make_shared<Race>();
-    race->left = (google ? 2 : 0) + (local ? 1 : 0);
+    // Google three ways (a new sentence takes it 0.5-1.5 s, differently each time; the first answer wins)
+    race->left = (google ? 3 : 0) + (local ? 1 : 0);
     auto finish = [this, race, source, p, google](const QString &result, const QString &error) {
         if (race->done)
             return;
@@ -863,15 +867,16 @@ void Worker::translateRace(const QString &source, const Params &p, bool google, 
     };
     if (google) {
         const ProtectedText prot = p.glossary ? protectTerms(source, *p.glossary, p.targetLang == QLatin1String("tr")) : ProtectedText { source };
-        for (const bool single : { true, false }) {
-            QNetworkRequest req(googleUrl(single, prot.text, p));
+        for (const int way : { 0, 1, 2 }) {
+            const bool single = way != 1;
+            QNetworkRequest req(googleUrl(single, prot.text, p, way == 2));
             req.setTransferTimeout(8000);
             QNetworkReply *reply = nam->get(req);
             QElapsedTimer took;
             took.start();
-            connect(reply, &QNetworkReply::finished, this, [reply, single, finish, took, prot]() {
+            connect(reply, &QNetworkReply::finished, this, [reply, single, way, finish, took, prot]() {
                 reply->deleteLater();
-                logInfo(QStringLiteral("google %1 answered in %2 ms (http2=%3, error=%4)").arg(single ? QStringLiteral("single") : QStringLiteral("t"))
+                logInfo(QStringLiteral("google %1 answered in %2 ms (http2=%3, error=%4)").arg(way == 2 ? QStringLiteral("gtx") : single ? QStringLiteral("single") : QStringLiteral("t"))
                             .arg(took.elapsed()).arg(reply->attribute(QNetworkRequest::Http2WasUsedAttribute).toBool())
                             .arg(int(reply->error())));
                 QString result;
@@ -1142,6 +1147,11 @@ void SubtitleTranslator::loadConfig()
             v.convert(it.value().metaType());
         cfg->insert(it.key(), v);
     }
+    // The old default reading interval (250 ms) becomes the new one once; a value the user chose stays
+    if (!saved.value(QStringLiteral("speed2")).toBool()) {
+        if (cfg->value(QStringLiteral("intervalMs")).toInt() == 250)
+            cfg->insert(QStringLiteral("intervalMs"), 150);
+    }
     applyConfig();
 }
 
@@ -1154,6 +1164,7 @@ void SubtitleTranslator::saveConfig()
             continue;
         all.insert(key, QJsonValue::fromVariant(cfg->value(key)));
     }
+    all.insert(QStringLiteral("speed2"), true);
     if (testOn) {
         QFile f(configFile);
         if (f.open(QIODevice::ReadOnly))
@@ -1196,14 +1207,34 @@ Params SubtitleTranslator::snapshotParams() const
     return params;
 }
 
+// Quick while there is text (or a line on screen to clear in time), slower after 2 s of nothing
+void SubtitleTranslator::paceTap(bool textNow)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (textNow)
+        lastTextMs = now;
+    const bool relax = !textNow && now - lastTextMs > 2000;
+    if (relax == relaxedTap)
+        return;
+    relaxedTap = relax;
+    // Only the copy interval changes (the overlay is left alone)
+    if (activeFlag.loadAcquire()) {
+        const Params p = snapshotParams();
+        const int interval = qBound(100, cfg->value("intervalMs").toInt(), 5000);
+        engine.subtitleTap(true, float(p.region.x()), float(p.region.y()), float(p.region.width()), float(p.region.height()),
+                           unsigned(relaxedTap ? qMax(300, interval * 2) : interval));
+    }
+}
+
 // Engine region copies only while on and a PS5 picture runs
 void SubtitleTranslator::updateTap()
 {
     const bool active = enabled() && streamingFlag && ocrAvailable;
     activeFlag.storeRelease(active ? 1 : 0);
     const Params p = snapshotParams();
+    const int interval = qBound(100, cfg->value("intervalMs").toInt(), 5000);
     engine.subtitleTap(active, float(p.region.x()), float(p.region.y()), float(p.region.width()), float(p.region.height()),
-                       unsigned(qBound(100, cfg->value("intervalMs").toInt(), 5000)));
+                       unsigned(relaxedTap ? qMax(300, interval * 2) : interval));
     const bool wantOverlay = (enabled() && streamingFlag) || selectingFlag;
     if (wantOverlay && !overlayTimer->isActive())
         overlayTimer->start();
@@ -1537,6 +1568,7 @@ void SubtitleTranslator::onOcrResult(const QString &text, int frameW, int frameH
     Q_UNUSED(frameH);
     if (!enabled())
         return;
+    paceTap(!text.isEmpty() || !ocrText.isEmpty());
     if (fresh)
         noteCleanRead(text, score);
     if (text.isEmpty()) {
@@ -1567,6 +1599,11 @@ void SubtitleTranslator::onOcrResult(const QString &text, int frameW, int frameH
         candidateSinceMs = sampleMs;
     }
     if (candidateHits < 2) {
+        // The translation starts at the first read: by the time the second read confirms the line it is
+        // usually back (from the cache then). Not for lines the dictionaries, the cache or the shared
+        // memory already have, nor for crumbs
+        if (candidateHits == 1 && text.count(QLatin1Char(' ')) >= 1 && text.size() >= 8)
+            requestEarly(text, box, lines, rows);
         if (++emptyStreak >= 2 && !ocrText.isEmpty()) {
             ocrText.clear();
             requestClear();
@@ -1700,10 +1737,42 @@ QString SubtitleTranslator::findInDictionary(const QString &text) const
     return best;
 }
 
+// A line read once, not confirmed yet: its translation asked for now (see onOcrResult)
+void SubtitleTranslator::requestEarly(const QString &source, const QRectF &box, int lines, const QVariantList &rows)
+{
+    if (pending.contains(source) || cache.contains(normalizeForCompare(source)))
+        return;
+    static const bool noDictionary = qEnvironmentVariableIntValue("OVIORA_TEST_NO_DICTIONARY") > 0;
+    if (cfg->value("useDictionary").toBool() && !noDictionary && !findInDictionary(source).isEmpty())
+        return;
+    if (tm && tm->active() && tm->cached(source))
+        return;
+    PendingTranslation p;
+    p.seq = nextSeq++;
+    p.box = box;
+    p.lines = lines;
+    p.rows = rows;
+    p.startedMs = QDateTime::currentMSecsSinceEpoch();
+    p.early = true;
+    pending.insert(source, p);
+    const Params params = snapshotParams();
+    QMetaObject::invokeMethod(worker, [w = worker, source, params] { w->translate(source, params); }, Qt::QueuedConnection);
+}
+
 void SubtitleTranslator::requestTranslation(const QString &source)
 {
-    if (pending.contains(source))
+    // Asked early already: it is now wanted on screen (keeps its sequence, the box of the confirmed read)
+    if (const auto it = pending.find(source); it != pending.end()) {
+        if (it->early) {
+            it->early = false;
+            it->box = ocrBox;
+            it->lines = ocrLines;
+            it->rows = ocrRows;
+            logInfo(QStringLiteral("translation requested (asked at the first read %1 ms ago)")
+                        .arg(QDateTime::currentMSecsSinceEpoch() - it->startedMs));
+        }
         return;
+    }
     PendingTranslation p;
     p.seq = nextSeq++;
     p.box = ocrBox;
@@ -1731,13 +1800,19 @@ void SubtitleTranslator::onTranslated(const QString &source, const QString &tran
     if (cache.size() > 5000)
         cache.clear();
     cache.insert(normalizeForCompare(source), translation);
+    const qint64 tookMs = QDateTime::currentMSecsSinceEpoch() - p.startedMs;
+    // Asked at the first read and the line was not confirmed (yet): kept in the cache only, never offered
+    // to the shared memory. If it is confirmed later, the cache answers at once
+    if (p.early && !textsSimilar(ocrText, source)) {
+        logInfo(QStringLiteral("early translation kept for later (%1 ms)").arg(tookMs));
+        return;
+    }
     // Offered to the shared memory (sent only if the server has none for this line), but only a
     // clean read of the English: see offerToMemory
     if (tm && tm->active()) {
         const int engineId = snapshotParams().engine;
         offerToMemory(source, translation, engineId == 2 || engineId == 4 ? QStringLiteral("llm") : QStringLiteral("google"));
     }
-    const qint64 tookMs = QDateTime::currentMSecsSinceEpoch() - p.startedMs;
     logInfo(QStringLiteral("translated in %1 ms: \"%2\"").arg(tookMs).arg(translation.left(120)));
     setStatus(tr("Çalışıyor — son çeviri %1 ms").arg(tookMs));
     // Shown while its English is still on screen. If the line already left and nothing replaced it,

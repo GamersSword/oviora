@@ -4,9 +4,13 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QElapsedTimer>
+
+#include "oviora/Log.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <format>
 
 PsnRelayBridge::PsnRelayBridge(OvioraServer *server, const QString &lease_sid)
 	: srv(server), sid(lease_sid)
@@ -37,7 +41,11 @@ int PsnRelayBridge::http(const char *op, const char *session_id, const char *bod
 	if(body && body_len)
 		req["body"] = QString::fromUtf8(body, qsizetype(body_len));
 	QString error;
+	QElapsedTimer took;
+	took.start();
 	const QJsonObject r = srv->callBlocking(QStringLiteral("psn_relay_http"), req, &error, 20000);
+	// How long each Sony call through the server takes (field reports: the PSN setup fails on far lines)
+	oviora::log::info("psn-relay", std::format("http {} status={} ms={}{}", op, r.value("status").toInt(), took.elapsed(), error.isEmpty() ? "" : " (server unreachable)"));
 	if(!error.isEmpty() || !r.contains("status"))
 		return -1;
 	*resp = dup_bytes(r.value("body").toString().toUtf8(), resp_len);
@@ -49,8 +57,12 @@ bool PsnRelayBridge::open(const char *pushctx)
 	if(!srv)
 		return false;
 	QString error;
+	QElapsedTimer took;
+	took.start();
 	const QJsonObject r = srv->callBlocking(QStringLiteral("psn_relay_open"),
 		{ { "sid", sid }, { "pushctx", QString::fromLatin1(pushctx) } }, &error, 20000);
+	oviora::log::info("psn-relay", std::format("open ok={} ms={}", error.isEmpty() && r.value("ok").toBool(), took.elapsed()));
+	opened_at.start();
 	return error.isEmpty() && r.value("ok").toBool();
 }
 
@@ -61,10 +73,25 @@ int PsnRelayBridge::poll(std::int64_t after, char ***events, std::size_t *count,
 	if(!srv)
 		return -1;
 	QString error;
+	QElapsedTimer took;
+	took.start();
 	const QJsonObject r = srv->callBlocking(QStringLiteral("psn_relay_poll"),
 		{ { "sid", sid }, { "after", double(after) } }, &error, 10000);
+	const qint64 ms = took.elapsed();
 	if(!error.isEmpty())
+	{
+		oviora::log::warn("psn-relay", std::format("poll failed after {} ms", ms));
 		return 0;	// a missed poll is retried; the library gives up on its own deadline
+	}
+	{
+		const QString st = r.value("state").toString();
+		const qsizetype n = r.value("events").toArray().size();
+		// State changes, every notification and slow polls (a poll waits up to 1 s on the server by design)
+		if(st != last_state || n > 0 || ms > 2500)
+			oviora::log::info("psn-relay", std::format("poll state={} events={} ms={} t={}ms", st.toStdString(), n, ms,
+				opened_at.isValid() ? opened_at.elapsed() : -1));
+		last_state = st;
+	}
 	const QJsonArray list = r.value("events").toArray();
 	if(!list.isEmpty())
 	{

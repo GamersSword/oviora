@@ -8,9 +8,12 @@ import Oviora
 //   quality / remoteQuality 0..3 = 720p30 / 720p60 / 1080p30 / 1080p60 (resolution and frame rate rows),
 //   codec / remoteCodec 0..2 = H.264 / H.265 / H.265 HDR,
 //   bitrate / remoteBitrate index 0..7 = 5/10/15/20/30/50/80/100 Mbps,
-//   bitrateAuto / remoteBitrateAuto = the old "Otomatik": 10 Mbps at 720p, 15 at 1080p, back on
-//   whenever the resolution changes.
-//   adaptive = Uyarlanabilir kalite (old adaptiveQuality, off by default; [Stream] adaptive, both sets).
+//   bitrateAuto / remoteBitrateAuto = the old "Otomatik": 10 Mbps at 720p, 15 at 1080p (internet:
+//   8 Mbps), back on whenever the resolution changes.
+//   The internet set's "Uzak bağlantı" defaults: 1080p, 30 fps, H.265, automatic bit rate.
+//   adaptive = Uyarlanabilir kalite ([Stream] adaptive, both sets; off unless turned on, also
+//   over the internet).
+//   smoothing = Akıcılık tamponu ([Stream] smoothing): Otomatik (on for internet streams) or Kapalı.
 // Kept but hidden: the PS5/PS4 choice, the after-stream quality hint.
 SettingsPage {
     id: page
@@ -28,9 +31,10 @@ SettingsPage {
         readonly property int resolution: quality >= 2 ? 1 : 0     // 0: 720p, 1: 1080p
         readonly property int fps: quality % 2                     // 0: 30, 1: 60
         readonly property bool automatic: stored("bitrateAuto", true) === true
-        // The old app's automatic rate for 720p and 1080p (index 1 = 10 Mbps, 2 = 15 Mbps)
-        readonly property int autoBitrate: resolution ? 15 : 10
-        readonly property int bitrate: automatic ? (resolution ? 2 : 1) : stored("bitrate", remote ? 1 : 2)
+        // The old app's automatic rate for 720p and 1080p (index 1 = 10 Mbps, 2 = 15 Mbps);
+        // over the internet 8 Mbps at any resolution (the slider rests at it, between 5 and 10)
+        readonly property int autoBitrate: remote ? 8 : resolution ? 15 : 10
+        readonly property int bitrate: automatic ? (resolution && !remote ? 2 : 1) : stored("bitrate", remote ? 1 : 2)
         readonly property string defaultResolution: remote ? "720p" : "1080p"
 
         SettingRow {
@@ -61,6 +65,7 @@ SettingsPage {
             title: qsTr("Bit hızı")
             help: !qc.automatic
                 ? qsTr("Saniyede gönderilen görüntü verisi. Bu çözünürlük için önerilen %1 Mbps.").arg(qc.autoBitrate)
+                : qc.remote ? qsTr("Şu an otomatik: internet için %1 Mbps. Çözünürlüğü değiştirince yeniden otomatiğe döner.").arg(qc.autoBitrate)
                 : qsTr("Şu an otomatik: çözünürlüğe göre %1 Mbps. Çözünürlüğü değiştirince yeniden otomatiğe döner.").arg(qc.autoBitrate)
             RowLayout {
                 spacing: 8
@@ -71,8 +76,10 @@ SettingsPage {
                     to: page.bitrates.length - 1
                     stepSize: 1
                     snapMode: Slider.SnapAlways
-                    value: qc.bitrate
-                    valueText: page.bitrates[Math.round(value)] + " Mbps"
+                    // Automatic over the internet is 8 Mbps, between the 5 and 10 steps: the knob rests there
+                    // (60 % of the way; snapping only applies when the user drags it)
+                    value: qc.automatic && qc.remote ? (qc.autoBitrate - page.bitrates[0]) / (page.bitrates[1] - page.bitrates[0]) : qc.bitrate
+                    valueText: (qc.automatic ? qc.autoBitrate : page.bitrates[Math.round(value)]) + " Mbps"
                     onMoved: oviora.ps5Set(qc.key("bitrate"), Math.round(value))
                 }
                 PillButton {
@@ -122,6 +129,23 @@ SettingsPage {
             Toggle {
                 checked: oviora.ps5.adaptive === true
                 onToggled: oviora.ps5Set("adaptive", checked)
+            }
+        }
+    }
+
+    // Internet streams: decoded frames wait a frame or two (33..66 ms at 30 fps) and leave on an
+    // even cadence, so a jittery line does not stutter on screen (RemotePlaySessionSource).
+    SettingsCard {
+        title: qsTr("Akıcılık tamponu")
+        description: qsTr("İnternet yayınında görüntüyü 1-2 kare bekletip eşit aralıkla gösterir; uzak ve dalgalı bağlantıda takılmayı azaltır. Ev ağında kullanılmaz.")
+        SettingRow {
+            title: qsTr("Tampon")
+            help: qsTr("Otomatik: hat sakinken 1 kare, dalgalanınca 2 kare bekler. Kapalı: her kare geldiği an gösterilir.")
+            Segmented {
+                segmentWidth: 100
+                model: [qsTr("Otomatik"), qsTr("Kapalı")]
+                currentIndex: oviora.ps5.smoothing === false ? 1 : 0
+                onActivated: (index) => oviora.ps5Set("smoothing", index === 0)
             }
         }
     }

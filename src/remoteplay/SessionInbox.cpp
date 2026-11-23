@@ -61,6 +61,15 @@ SessionInbox::Snapshot SessionInbox::snapshot()const{
     };
     aggregate(s.decodeTimes,result.decodeMeanMs,&result.decodeP95Ms);aggregate(s.ingressWait,result.ingressWaitMeanMs,nullptr);return result;
 }
+SessionInbox::Snapshot SessionInbox::quickSnapshot()const{
+    auto& s=*shared_;std::lock_guard l(s.mutex);Snapshot result{s.generation,s.state,s.origin,s.stale,s.error,s.video.stats(),s.audio.stats()};
+    result.lastVideo100ns=s.lastVideo;result.lastAudio100ns=s.lastAudio;
+    result.decodeStarted100ns=s.decodeStart;result.lastDecoded100ns=s.lastDecoded;
+    result.decodedFrames=s.decodedFrames;result.receivedBytes=s.receivedBytes;result.framesLost=s.framesLost;result.referenceRecoveryEvents=s.referenceRecoveryEvents;
+    result.hardwareDecode=s.hardwareDecode;result.decodeFallback=s.decodeFallback;result.decodeConfirmed=s.decodeConfirmed;
+    result.requestedProfile=s.requestedProfile;
+    return result;
+}
 void SessionInbox::decodeStarted(HostTime now,HostTime arrival){auto& s=*shared_;std::lock_guard l(s.mutex);s.decodeStart=now;if(arrival>0&&now>=arrival)Shared::add(s.ingressWait,now,double(now-arrival)/10000);}
 void SessionInbox::decodeFinished(HostTime now){auto& s=*shared_;std::lock_guard l(s.mutex);if(s.decodeStart>0&&now>=s.decodeStart)Shared::add(s.decodeTimes,now,double(now-s.decodeStart)/10000);s.decodeStart=0;}
 void SessionInbox::frameDecoded(HostTime now){auto& s=*shared_;std::lock_guard l(s.mutex);s.lastDecoded=now;++s.decodedFrames;Shared::add(s.decoded,now,1);}

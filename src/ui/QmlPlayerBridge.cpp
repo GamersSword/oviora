@@ -1,5 +1,7 @@
 // QML bridge: Core responsibilities.
 #include "QmlPlayerBridge_p.h"
+#include "oviora/gfx/PresentationHooks.h"
+#include <QThreadPool>
 
 namespace oviora::ui {
 namespace {
@@ -53,6 +55,8 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
     connect(this,&QmlPlayerBridge::settingsChanged,this,&QmlPlayerBridge::fgChoicesChanged);
     auto* capabilityTimer=new QTimer(this);
     connect(capabilityTimer,&QTimer::timeout,this,[this,reported=currentEffectCapabilities(),priorityRevision=uint64_t(-1),tick=0]() mutable {
+        const bool trace = qApp && qApp->property("ovioraTraceUiStalls").toBool();
+        const auto t0 = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         if(gfx::gpuPriorityStatus().state==gfx::GpuPriorityState::Pending)gfx::applyRequestedGpuPriority();
         const auto priority=gfx::gpuPriorityStatus();
         if(priority.revision!=priorityRevision){priorityRevision=priority.revision;emit preferencesChanged();}
@@ -60,6 +64,10 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
         // UI thread while a stream runs; actions still refresh it at once
         if(++tick%5!=0||impl_->snapshot.running)return;
         const auto next=currentEffectCapabilities(true);
+        if (trace) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (ms >= 1.0) oviora::log::info("ui-stall-timer", std::format("capabilityTimer ms={:.2f}", ms));
+        }
         // An action may have refreshed the cache before this tick. Compare with
         // the last reported map so that QML still learns about that change.
         if(next==reported)return;
@@ -286,6 +294,8 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
     });
     impl_->timer = new QTimer(this);
     connect(impl_->timer, &QTimer::timeout, this, [this] {
+        const bool trace = qApp && qApp->property("ovioraTraceUiStalls").toBool();
+        const auto t0 = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         const bool had = impl_->haveSnapshot;
         const uint64_t before = impl_->publishedRevision;
         const bool wasRunning = impl_->snapshot.running;
@@ -374,6 +384,10 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
             if (had && !wasEngineHung && s.status == engine::kEngineHangStatus) emit notice(uiText(s.status), true);
             emit snapshotChanged();
         }
+        if (trace) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (ms >= 1.0) oviora::log::info("ui-stall-timer", std::format("pollTimer ms={:.2f} running={}", ms, impl_->snapshot.running));
+        }
     });
     impl_->timer->start(16);
     startGpuSampler();
@@ -381,7 +395,10 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
     // appears (Qt's at start, the engine's at open); see gfx/PresentationHooks.h for what
     // they broke in the field. Log each once (every 2 s for two minutes, then every 10 s).
     auto* hookTimer = new QTimer(this);
-    connect(hookTimer, &QTimer::timeout, this, [this, hookTimer, started = GetTickCount64()] {
+    auto hookScanInFlight = std::make_shared<std::atomic<bool>>(false);
+    connect(hookTimer, &QTimer::timeout, this, [this, hookTimer, hookScanInFlight, started = GetTickCount64()] {
+        const bool trace = qApp && qApp->property("ovioraTraceUiStalls").toBool();
+        const auto t0 = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         struct Seen { const wchar_t* module; const char* product; };
         static const Seen others[] = {
             {L"graphics-hook64.dll", "OBS game capture"}, {L"DiscordHook64.dll", "Discord overlay"},
@@ -415,38 +432,63 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
         // so nothing breaks; a restart moves the interface to software drawing and puts the
         // OSD on the video.
         static bool rivaTunerLate = false;
-        if (!rivaTunerLate && !qApp->property("ovioraSoftwareUi").toBool() && !qApp->property("ovioraUiRendererForced").toBool()
-                && GetModuleHandleW(L"RTSSHooks64.dll") && gfx::rivaTunerRunning()) {
+        const bool checkGpuOverlays = !qApp->property("ovioraSoftwareUi").toBool() && !qApp->property("ovioraUiRendererForced").toBool();
+        if (!rivaTunerLate && checkGpuOverlays && GetModuleHandleW(L"RTSSHooks64.dll") && gfx::rivaTunerRunning()) {
             rivaTunerLate = true;
             const bool automatic = impl_->prefString("overlayCompat") != QLatin1String("off");
             oviora::log::warn("overlay-hooks", std::format("RivaTuner injected into a run with a GPU interface; its OSD is off in this process ({})",
                 automatic ? "active OSD server: compatibility restart suggested" : "monitoring compatibility off"));
             if (automatic) emit overlayRestartSuggested(QStringLiteral("rtss"));
         }
-        // NVIDIA's in-game overlay switched on after a start with the interface on the GPU
-        // (main.cpp checks at start). Unlike RTSS it cannot be kept out of this process,
-        // and with both swapchains hooked the video and interface threads deadlocked in
-        // the field (gfx/PresentationHooks.h); a restart draws the interface in software.
         static bool nvidiaOverlayLate = false;
-        if (!nvidiaOverlayLate && !qApp->property("ovioraSoftwareUi").toBool() && !qApp->property("ovioraUiRendererForced").toBool()
-                && !GetEnvironmentVariableW(L"OVIORA_TEST_IGNORE_NVIDIA_OVERLAY", nullptr, 0) && gfx::nvidiaOverlayRunning()) {
-            nvidiaOverlayLate = true;
-            const bool automatic = impl_->prefString("overlayCompat") != QLatin1String("off");
-            oviora::log::warn("overlay-hooks", std::format("NVIDIA overlay is on in a run with a GPU interface ({})",
-                automatic ? "compatibility restart suggested" : "monitoring compatibility off"));
-            if (automatic) emit overlayRestartSuggested(QStringLiteral("nvidia"));
-        }
-        // GamePP (游戏加加) started after Oviora or injected into it: same as NVIDIA's overlay.
         static bool gamePPLate = false;
-        if (!gamePPLate && !qApp->property("ovioraSoftwareUi").toBool() && !qApp->property("ovioraUiRendererForced").toBool()
-                && !GetEnvironmentVariableW(L"OVIORA_TEST_IGNORE_GAMEPP", nullptr, 0) && (gfx::gamePPInjected() || gfx::gamePPRunning())) {
+        if (checkGpuOverlays && !gamePPLate
+                && !GetEnvironmentVariableW(L"OVIORA_TEST_IGNORE_GAMEPP", nullptr, 0) && gfx::gamePPInjected()) {
             gamePPLate = true;
             const bool automatic = impl_->prefString("overlayCompat") != QLatin1String("off");
             oviora::log::warn("overlay-hooks", std::format("GamePP is running or injected in a run with a GPU interface ({})",
                 automatic ? "compatibility restart suggested" : "monitoring compatibility off"));
             if (automatic) emit overlayRestartSuggested(QStringLiteral("gamepp"));
         }
-        updateLiveCompanionCompat();
+        const bool overlayAuto = impl_->prefString("overlayCompat") != QLatin1String("off");
+        if (!overlayAuto && impl_->liveCompanionCap)
+            applyLiveCompanionCompat(false);
+        const bool checkNv = checkGpuOverlays && !nvidiaOverlayLate && !GetEnvironmentVariableW(L"OVIORA_TEST_IGNORE_NVIDIA_OVERLAY", nullptr, 0);
+        const bool checkGp = checkGpuOverlays && !gamePPLate && !GetEnvironmentVariableW(L"OVIORA_TEST_IGNORE_GAMEPP", nullptr, 0);
+        const bool checkDouyin = overlayAuto && !GetEnvironmentVariableW(L"OVIORA_TEST_IGNORE_DOUYIN", nullptr, 0);
+        // Toolhelp process snapshots take ~5-8 ms each; run a single combined snapshot off the GUI thread.
+        if ((checkNv || checkGp || checkDouyin) && !hookScanInFlight->exchange(true)) {
+            QPointer<QmlPlayerBridge> self(this);
+            QThreadPool::globalInstance()->start([self, hookScanInFlight, checkNv, checkGp, checkDouyin]() {
+                const auto scan = gfx::scanProcessHooks();
+                if (QCoreApplication::instance()) {
+                    QMetaObject::invokeMethod(QCoreApplication::instance(), [self, hookScanInFlight, scan, checkNv, checkGp, checkDouyin]() {
+                        hookScanInFlight->store(false);
+                        if (!self) return;
+                        if (checkNv && !nvidiaOverlayLate && scan.nvidiaOverlay) {
+                            nvidiaOverlayLate = true;
+                            const bool automatic = self->impl_->prefString("overlayCompat") != QLatin1String("off");
+                            oviora::log::warn("overlay-hooks", std::format("NVIDIA overlay is on in a run with a GPU interface ({})",
+                                automatic ? "compatibility restart suggested" : "monitoring compatibility off"));
+                            if (automatic) emit self->overlayRestartSuggested(QStringLiteral("nvidia"));
+                        }
+                        if (checkGp && !gamePPLate && scan.gamePP) {
+                            gamePPLate = true;
+                            const bool automatic = self->impl_->prefString("overlayCompat") != QLatin1String("off");
+                            oviora::log::warn("overlay-hooks", std::format("GamePP is running or injected in a run with a GPU interface ({})",
+                                automatic ? "compatibility restart suggested" : "monitoring compatibility off"));
+                            if (automatic) emit self->overlayRestartSuggested(QStringLiteral("gamepp"));
+                        }
+                        if (checkDouyin) {
+                            const bool automatic = self->impl_->prefString("overlayCompat") != QLatin1String("off");
+                            self->applyLiveCompanionCompat(automatic && scan.douyinCompanion);
+                        }
+                    }, Qt::QueuedConnection);
+                } else {
+                    hookScanInFlight->store(false);
+                }
+            });
+        }
         // RivaTuner's default hooking keeps OBS game capture from hooking any Direct3D 12
         // program (2026-10-03, RTSS 7.3.5.28314 + OBS 32.1.2, a bare D3D12 window included;
         // RTSS version corrected against the executable on 2026-10-04); its
@@ -465,6 +507,10 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
         // Overlays inject when they decide the window is a game, e.g. on entering fullscreen
         // long after start; after the first two minutes look every 10 s instead of every 2 s.
         if (GetTickCount64() - started > 120000 && hookTimer->interval() < 10000) hookTimer->setInterval(10000);
+        if (trace) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (ms >= 1.0) oviora::log::info("ui-stall-timer", std::format("hookTimer ms={:.2f}", ms));
+        }
     });
     hookTimer->start(2000);
     // The previous run crashed or lost the GPU with a known-risky component injected:

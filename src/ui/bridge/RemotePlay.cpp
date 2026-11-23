@@ -1,6 +1,7 @@
 // QML bridge: RemotePlay responsibilities.
 #include "../QmlPlayerBridge_p.h"
 #include "oviora/remoteplay/ChiakiBackend.h"
+#include "oviora/remoteplay/WatchRoute.h"
 #include <QDateTime>
 
 namespace oviora::ui {
@@ -88,8 +89,9 @@ void QmlPlayerBridge::ps5Load() {
         // 1080p) until the slider is moved; a home set saved with a bit rate keeps it.
         const int homeAuto = int(GetPrivateProfileIntW(L"Stream", L"bitrateAuto", -1, ps5Settings().c_str()));
         i.ps5Form["bitrateAuto"] = homeAuto >= 0 ? homeAuto != 0 : GetPrivateProfileIntW(L"Stream", L"bitrate", 100, ps5Settings().c_str()) == 100;
-        // The internet set (old Oviora's "Internet" card), with the old defaults:
-        // 720p, 60 fps, H.265, automatic bit rate.
+        // The internet set (old Oviora's "Internet" card). Match 1913's remote default
+        // (720p, 60 fps, H.265) with automatic bit rate (8 Mbps, see ps5Video) so frames
+        // stay smaller per burst on long lines. A value the user picked in [StreamInternet] wins.
         const auto internet = [](const wchar_t* key, int fallback, int high) {
             const int v = int(GetPrivateProfileIntW(L"StreamInternet", key, -1, ps5Settings().c_str()));
             return v >= 0 && v <= high ? v : fallback;
@@ -98,8 +100,13 @@ void QmlPlayerBridge::ps5Load() {
         i.ps5Form["remoteCodec"] = internet(L"codec", 1, 2);
         i.ps5Form["remoteBitrate"] = internet(L"bitrate", 1, 7);
         i.ps5Form["remoteBitrateAuto"] = internet(L"bitrateAuto", 1, 1) != 0;
-        // Yayın → Uyarlanabilir kalite (old adaptiveQuality, off by default), both sets
-        i.ps5Form["adaptive"] = GetPrivateProfileIntW(L"Stream", L"adaptive", 0, ps5Settings().c_str()) != 0;
+        // Yayın → Uyarlanabilir kalite (old adaptiveQuality), both sets. Not set by the user: off
+        // at home, on over the internet (ps5Connect); the toggle shows the home value.
+        const int adaptive = int(GetPrivateProfileIntW(L"Stream", L"adaptive", -1, ps5Settings().c_str()));
+        i.ps5Form["adaptive"] = adaptive > 0;
+        i.ps5Form["adaptiveSet"] = adaptive >= 0;
+        // Yayın → Akıcılık tamponu: 1 Otomatik (on for internet streams), 0 Kapalı
+        i.ps5Form["smoothing"] = GetPrivateProfileIntW(L"Stream", L"smoothing", 1, ps5Settings().c_str()) != 0;
         if (i.ps5Status.isEmpty())
             i.ps5Status = failures ? tr("有配对存档无法读取或解密，详情见日志。请使用原 Windows 账户；不要删除原件。")
                         : !i.ps5Profile.empty() ? tr("已加载保存的主机，直接点“连接”，无需重新填写 8 位配对码。")
@@ -136,10 +143,11 @@ bool QmlPlayerBridge::ps5Set(const QString& key, const QVariant& value) {
         WritePrivateProfileStringW(key == QLatin1String("bitrateAuto") ? L"Stream" : L"StreamInternet", L"bitrateAuto", value.toBool() ? L"1" : L"0", ps5Settings().c_str());
 #endif
     } else if (key == QLatin1String("viewOnly")) impl_->ps5Form[key] = value.toBool();
-    else if (key == QLatin1String("adaptive")) {
+    else if (key == QLatin1String("adaptive") || key == QLatin1String("smoothing")) {
         impl_->ps5Form[key] = value.toBool();
+        if (key == QLatin1String("adaptive")) impl_->ps5Form["adaptiveSet"] = true;
 #ifdef OVIORA_ENABLE_REMOTEPLAY
-        WritePrivateProfileStringW(L"Stream", L"adaptive", value.toBool() ? L"1" : L"0", ps5Settings().c_str());
+        WritePrivateProfileStringW(L"Stream", key.toStdWString().c_str(), value.toBool() ? L"1" : L"0", ps5Settings().c_str());
 #endif
     }
     else if (key == QLatin1String("host") || key == QLatin1String("account")) impl_->ps5Form[key] = value.toString().trimmed();
@@ -178,15 +186,58 @@ remoteplay::VideoProfile ps5Video(const QVariantMap& f, bool internet = false) {
     remoteplay::VideoProfile p; const int q = value("quality", "remoteQuality");
     p.width = q < 2 ? 1280 : 1920; p.height = q < 2 ? 720 : 1080; p.fps = (q == 0 || q == 2) ? 30 : 60;
     p.codec = static_cast<remoteplay::Codec>(std::clamp(value("codec", "remoteCodec"), 0, 2));
-    // "Otomatik": the lib's preset rate for the resolution (10 Mbps at 720p, 15 at 1080p)
+    // "Otomatik": at home the lib's preset rate for the resolution (10 Mbps at 720p, 15 at 1080p);
+    // over the internet 8 Mbps, which a lossy long line carries with room to spare.
     const bool automatic = f.value(internet ? "remoteBitrateAuto" : "bitrateAuto").toBool();
-    p.bitrateKbps = automatic ? (p.height == 1080 ? 15000u : 10000u) : kPs5Bitrates[std::clamp(value("bitrate", "remoteBitrate"), 0, 7)];
+    p.bitrateKbps = automatic ? (internet ? 8000u : p.height == 1080 ? 15000u : 10000u) : kPs5Bitrates[std::clamp(value("bitrate", "remoteBitrate"), 0, 7)];
     return p;
 }
 std::string asciiOnly(const QString& s) {
     std::string out;
     for (const QChar c : s) { if (c.unicode() > 127) return {}; out.push_back(char(c.unicode())); }
     return out;
+}
+// A new pairing file with a random name; empty when no name could be made.
+std::filesystem::path newProfilePath() {
+    GUID guid{}; if (FAILED(CoCreateGuid(&guid))) return {};
+    std::string name; const auto* bytes = reinterpret_cast<const unsigned char*>(&guid);
+    for (size_t k = 0; k < sizeof(guid); ++k) name += std::format("{:02x}", bytes[k]);
+    return remoteplay::profileDirectory() / (name + ".dat");
+}
+bool validConsoleId(const QString& id) {
+    return id.size() == 12 && std::all_of(id.begin(), id.end(), [](QChar c) { return (c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f'); });
+}
+// The account keeps the 16-byte keys as 32 lowercase hex characters.
+std::string keyHex(const void* data) {
+    std::string out; const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t k = 0; k < 16; ++k) out += std::format("{:02x}", bytes[k]);
+    return out;
+}
+bool keyFromHex(const QString& hex, void* out) {
+    const auto nibble = [](QChar c) -> int {
+        const auto u = c.unicode();
+        return u >= '0' && u <= '9' ? u - '0' : u >= 'a' && u <= 'f' ? u - 'a' + 10 : u >= 'A' && u <= 'F' ? u - 'A' + 10 : -1;
+    };
+    if (hex.size() != 32) return false;
+    auto* bytes = static_cast<unsigned char*>(out);
+    for (int k = 0; k < 16; ++k) {
+        const int high = nibble(hex[2 * k]), low = nibble(hex[2 * k + 1]);
+        if (high < 0 || low < 0) return false;
+        bytes[k] = static_cast<unsigned char>(high * 16 + low);
+    }
+    return true;
+}
+// One pairing as the account stores it (local_console_put). Never logged.
+QJsonObject accountConsole(const remoteplay::NativeConnectRequest& r, const QString& name) {
+    std::string regist = keyHex(r.credentials.registrationKey.data()), rp = keyHex(r.credentials.sessionKey.data());
+    const bool account = std::any_of(r.credentials.accountId.begin(), r.credentials.accountId.end(), [](auto b) { return b != 0; });
+    QJsonObject c{{"id", QString::fromStdString(r.consoleId)}, {"name", name.left(64)},
+                  {"regist_key", QString::fromLatin1(regist.data(), qsizetype(regist.size()))},
+                  {"rp_key", QString::fromLatin1(rp.data(), qsizetype(rp.size()))}, {"rp_key_type", 0},
+                  {"account_id", account ? QString::fromStdString(remoteplay::accountIdToBase64(r.credentials.accountId)) : QString()},
+                  {"host", QString::fromStdString(r.host)}, {"ps5", true}};
+    SecureZeroMemory(regist.data(), regist.size()); SecureZeroMemory(rp.data(), rp.size());
+    return c;
 }
 }
 #endif
@@ -231,10 +282,8 @@ void QmlPlayerBridge::ps5Pair(const QString& pinText) {
         if (auto saved = remoteplay::loadProfile(path); saved && saved->host == host && saved->credentials.accountId == *account) target = path;
     }
     if (target.empty()) {
-        GUID guid{}; if (FAILED(CoCreateGuid(&guid))) { impl_->ps5Status = tr("无法分配配对存档，请重试。"); emit ps5Changed(); return; }
-        std::string name; const auto* bytes = reinterpret_cast<const unsigned char*>(&guid);
-        for (size_t k = 0; k < sizeof(guid); ++k) name += std::format("{:02x}", bytes[k]);
-        target = remoteplay::profileDirectory() / (name + ".dat");
+        target = newProfilePath();
+        if (target.empty()) { impl_->ps5Status = tr("无法分配配对存档，请重试。"); emit ps5Changed(); return; }
     }
     const auto format = ps5Video(impl_->ps5Form);
     auto work = [host = std::move(host), account = *account, pin = std::move(pin), format, target](std::stop_token stop) mutable {
@@ -276,8 +325,13 @@ bool QmlPlayerBridge::ps5Connect() {
     desc.request = std::move(*saved);
     }
     const bool overPsn = desc.request.psn != nullptr;
+    // Uyarlanabilir kalite: the user's choice; never set, on for internet streams only.
     // OVIORA_TEST_ADAPTIVE=1: on for a test run without touching the setting.
-    desc.request.adaptiveResolution = i.ps5Form.value("adaptive").toBool() || qEnvironmentVariableIntValue("OVIORA_TEST_ADAPTIVE") == 1;
+    // Off unless the user turns it on: not yet tried over PSN on a real PS5 (an untested message once broke its Remote Play)
+    const bool adaptive = i.ps5Form.value("adaptiveSet").toBool() && i.ps5Form.value("adaptive").toBool();
+    desc.request.adaptiveResolution = adaptive || qEnvironmentVariableIntValue("OVIORA_TEST_ADAPTIVE") == 1;
+    // Akıcılık tamponu "Otomatik": a frame or two of hold for internet streams, none at home.
+    desc.smoothing = overPsn && i.ps5Form.value("smoothing").toBool();
     // OVIORA_TEST_PS5_720P=1: a 720p request for a test run, the saved settings untouched.
     if (qEnvironmentVariableIntValue("OVIORA_TEST_PS5_720P") == 1) {
         desc.request.video.width = 1280; desc.request.video.height = 720;
@@ -286,7 +340,7 @@ bool QmlPlayerBridge::ps5Connect() {
     }
     if (desc.request.adaptiveResolution)
         oviora::log::info("remoteplay-ui", std::format("adaptive quality: the console is offered a lower resolution too{}",
-            i.ps5Form.value("adaptive").toBool() ? "" : " (test switch)"));
+            adaptive ? "" : " (test switch)"));
     const int decode = std::clamp(i.ps5Form.value("decode").toInt(), 0, 2);
     desc.decodeMode = static_cast<source::RemotePlayConnectDesc::DecodeMode>(decode);
     desc.highQualitySampling = i.ps5Form.value("sampling").toInt() == 1;
@@ -295,7 +349,7 @@ bool QmlPlayerBridge::ps5Connect() {
     const bool viewOnly = desc.request.viewOnly;
     flushPreferences();
     // A new attempt: the connecting screen starts over, an old error card goes
-    i.connectionPsn = overPsn; i.connectionSeen = false; i.connectionError.clear();
+    i.connectionPsn = overPsn; i.connectionWatching = false; i.connectionSeen = false; i.connectionError.clear();
     // The session id is cleared with the flag: the previous session's id left over here
     // ended "opening" on the next snapshot while the old source still ran.
     i.openingSource = true; i.openingSessionId = 0; i.sourceLabel = L"PS5 · " + std::wstring(host.begin(), host.end());
@@ -336,8 +390,9 @@ bool QmlPlayerBridge::ps5Connect() {
     i.ps5Status = tr("连接已开始。需要登录 PIN 时在下方提交。关闭面板不停止串流。");
     {
         const auto v = ps5Video(i.ps5Form, overPsn);
-        oviora::log::info("remoteplay-ui", std::format("connect set={} {}p{} codec={} bitrate={}kbps{} decode={} viewOnly={}", overPsn ? "internet" : "home",
-            v.height, v.fps, int(v.codec), v.bitrateKbps, i.ps5Form.value(overPsn ? "remoteBitrateAuto" : "bitrateAuto").toBool() ? " (auto)" : "", decode, viewOnly));
+        oviora::log::info("remoteplay-ui", std::format("connect set={} {}p{} codec={} bitrate={}kbps{} decode={} viewOnly={} adaptive={} smoothing={}", overPsn ? "internet" : "home",
+            v.height, v.fps, int(v.codec), v.bitrateKbps, i.ps5Form.value(overPsn ? "remoteBitrateAuto" : "bitrateAuto").toBool() ? " (auto)" : "", decode, viewOnly,
+            adaptive, overPsn && i.ps5Form.value("smoothing").toBool()));
     }
     emit ps5Changed();
     return true;
@@ -355,6 +410,68 @@ bool QmlPlayerBridge::connectPsn(std::shared_ptr<const void> route, const QStrin
     return ps5Connect();
 #else
     Q_UNUSED(route); Q_UNUSED(nickname);
+    return false;
+#endif
+}
+bool QmlPlayerBridge::connectWatch(std::shared_ptr<remoteplay::WatchRoute> route, const QString& title) {
+#if defined(OVIORA_ENABLE_REMOTEPLAY) && defined(OVIORA_HAS_IZLET)
+    if (!route) return false;
+    auto& i = *impl_;
+    if (i.ps5Busy) return false;
+    const QString codecLow = QString::fromStdString(route->codec).trimmed().toLower();
+    remoteplay::Codec watchCodec = remoteplay::Codec::H264;
+    if (codecLow == QLatin1String("h264")) {
+        watchCodec = remoteplay::Codec::H264;
+    } else if (codecLow == QLatin1String("h265") || codecLow == QLatin1String("hevc") || codecLow == QLatin1String("h265hdr")) {
+        watchCodec = remoteplay::Codec::H265;
+    } else {
+        oviora::log::warn("watch-ui", std::format("unsupported watch codec: {}", route->codec));
+        return false;
+    }
+    if (i.ps5Form.isEmpty()) ps5Load();
+    source::RemotePlayConnectDesc desc;
+    desc.request.video.width = 1920;
+    desc.request.video.height = 1080;
+    desc.request.video.fps = 60;
+    desc.request.video.bitrateKbps = 15000;
+    desc.request.video.codec = watchCodec;
+    desc.request.viewOnly = true;
+    desc.request.watch = std::move(route);
+    desc.smoothing = false;
+    const int decode = std::clamp(i.ps5Form.value("decode").toInt(), 0, 2);
+    desc.decodeMode = static_cast<source::RemotePlayConnectDesc::DecodeMode>(decode);
+    desc.highQualitySampling = i.ps5Form.value("sampling").toInt() == 1;
+    flushPreferences();
+
+    const QString displayTitle = title.trimmed().isEmpty() ? tr("Canlı Yayın") : title.trimmed();
+    i.connectionPsn = false;
+    i.connectionWatching = true;
+    i.connectionName = displayTitle;
+    i.connectionSeen = false;
+    i.connectionError.clear();
+    i.openingSource = true;
+    i.openingSessionId = 0;
+    i.sourceLabel = wideOf(displayTitle);
+    i.ps5Watching = false;
+
+    auto request = std::make_shared<source::RemotePlayConnectDesc>(std::move(desc));
+    openAfterCinema(tr("Yayına bağlanılıyor · %1").arg(displayTitle), [this, request] {
+        auto& j = *impl_;
+        if (j.preOpen) j.preOpen();
+        j.engine.previewView({});
+        j.engine.openRemotePlay(j.videoWindow, std::move(*request), j.options);
+        j.openingSessionId = j.engine.snapshot().sessionId;
+        refreshSubtitles({});
+        if (j.controllerTimer) j.controllerTimer->stop();
+        j.releasePad(Impl::PadPs5);
+    });
+    updateConnection();
+    oviora::log::info("watch-ui", std::format("connectWatch codec={} decode={} title={}",
+                                              watchCodec == remoteplay::Codec::H264 ? "h264" : "h265",
+                                              decode, displayTitle.toStdString()));
+    return true;
+#else
+    Q_UNUSED(route); Q_UNUSED(title);
     return false;
 #endif
 }
@@ -389,6 +506,8 @@ QVariantList QmlPlayerBridge::lanConsoles() const {
                            // The running game's title id (the subtitles' shared memory keeps lines per game)
                            {"titleId", f ? QString::fromStdString(f->runningTitleId) : QString()},
                            {"display", registered || id.isEmpty() || !hidden.contains(id)}, {"id", id},
+                           // The name the PS5 announces itself (the same as on PSN), whatever the user calls it here
+                           {"hostName", f ? QString::fromStdString(f->name) : QString()},
                            {"autoConnect", registered && key == autoConnect},
                            {"duid", QString()}, {"manual", false}};
     };
@@ -434,8 +553,10 @@ void QmlPlayerBridge::tickLan() {
     const bool streaming = remotePlayActive();
     // Waiting for a woken console: searched every 2 s, also with the search switched off
     const bool waking = !i.wakeWaitKey.isEmpty();
-    if ((!i.lanSearch && !waking) || i.lanWorker.joinable() || i.ps5Busy || streaming || now < i.lanNext) return;
-    i.lanNext = now + std::chrono::seconds(waking ? 2 : 8);
+    // While streaming only every 30 s: one small question, so the game running on the PS5 (whichever
+    // account plays it) stays known for the friends' list and Discord
+    if ((!i.lanSearch && !waking) || i.lanWorker.joinable() || i.ps5Busy || now < i.lanNext) return;
+    i.lanNext = now + std::chrono::seconds(waking ? 2 : streaming ? 30 : 8);
     i.lanDone = false;
     i.lanWorker = std::jthread([&i](std::stop_token stop) {
         auto report = remoteplay::discoverLocalPs5(stop);
@@ -478,6 +599,7 @@ void QmlPlayerBridge::lanWake(const QString& key) {
     i.wakeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
     i.lanNext = {};
     for (const auto& v : lanConsoles()) if (v.toMap().value("key").toString() == key) i.connectionName = v.toMap().value("name").toString();
+    i.connectionWatching = false;
     i.connectionError.clear();
     emit navigate(QStringLiteral("min"));
     updateConnection();
@@ -591,11 +713,93 @@ void QmlPlayerBridge::ps5Wake() {
 void QmlPlayerBridge::ps5Forget() {
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     if (impl_->ps5Busy || impl_->ps5Profile.empty()) return;
+    const auto path = remoteplay::profileDirectory() / impl_->ps5Profile;
+    const auto saved = remoteplay::loadProfile(path);
+    const QString consoleId = saved ? QString::fromStdString(saved->consoleId) : QString();
     std::error_code ec;
-    const bool removed = std::filesystem::remove(remoteplay::profileDirectory() / impl_->ps5Profile, ec);
+    const bool removed = std::filesystem::remove(path, ec);
     impl_->ps5Status = removed ? tr("配对已删除。现有串流会保留；下次连接需选择其他主机或重新配对。") : tr("删除失败，请检查目录权限。");
     if (removed) impl_->ps5Profile.clear();
     ps5Load();
+    // The account forgets the console too, unless another pairing here is for the same one
+    bool kept = false;
+    for (const auto& p : impl_->ps5ProfileList) kept = kept || p.toMap().value("consoleId").toString() == consoleId;
+    if (removed && validConsoleId(consoleId) && !kept && impl_->accountCall)
+        impl_->accountCall(QStringLiteral("local_console_remove"), QJsonObject{{"id", consoleId}}, [id = consoleId.toStdString()](const QJsonObject&, const QString& error) {
+            oviora::log::info("console-sync", error.isEmpty() ? std::format("removed {}", id) : std::format("remove {} failed: {}", id, error.toStdString()));
+        });
+#endif
+}
+// --- Oviora account: PS5s paired on the home network ----------------------------------------------
+void QmlPlayerBridge::setAccountCall(AccountCall call) { impl_->accountCall = std::move(call); }
+void QmlPlayerBridge::syncAccountConsoles() {
+#ifdef OVIORA_ENABLE_REMOTEPLAY
+    if (!impl_->accountCall) return;
+    impl_->accountCall(QStringLiteral("local_consoles"), {}, [self = QPointer<QmlPlayerBridge>(this)](const QJsonObject& reply, const QString& error) {
+        if (!self) return;
+        if (!error.isEmpty()) { oviora::log::info("console-sync", std::format("list failed: {}", error.toStdString())); return; }
+        self->takeAccountConsoles(reply.value("consoles").toArray());
+    });
+#endif
+}
+void QmlPlayerBridge::putAccountConsole(const QString& profileId) {
+#ifdef OVIORA_ENABLE_REMOTEPLAY
+    if (!impl_->accountCall) return;
+    auto saved = remoteplay::loadProfile(remoteplay::profileDirectory() / profileId.toStdWString());
+    if (!saved || saved->consoleId.size() != 12) return;
+    impl_->accountCall(QStringLiteral("local_console_put"), QJsonObject{{"console", accountConsole(*saved, lanName(profileId))}},
+        [id = saved->consoleId](const QJsonObject&, const QString& error) {
+            oviora::log::info("console-sync", error.isEmpty() ? std::format("saved {}", id) : std::format("save {} failed: {}", id, error.toStdString()));
+        });
+#else
+    Q_UNUSED(profileId);
+#endif
+}
+void QmlPlayerBridge::takeAccountConsoles(const QJsonArray& consoles) {
+#ifdef OVIORA_ENABLE_REMOTEPLAY
+    auto& i = *impl_;
+    try {
+        ps5Load();  // the pairings on disk now
+        QSet<QString> local, remote;
+        for (const auto& p : i.ps5ProfileList) local.insert(p.toMap().value("consoleId").toString());
+        unsigned added = 0, skipped = 0;
+        for (const auto& v : consoles) {
+            const auto c = v.toObject();
+            const QString id = c.value("id").toString().toLower();
+            if (!validConsoleId(id)) { ++skipped; continue; }
+            remote.insert(id);
+            if (local.contains(id)) continue;  // a pairing made here is never replaced
+            // Paired on another device: the same keys work here, at the console's last address
+            remoteplay::NativeConnectRequest r;
+            r.host = asciiOnly(c.value("host").toString()); r.consoleId = id.toStdString(); r.video = ps5Video(i.ps5Form);
+            const QString account = c.value("account_id").toString();
+            const auto accountId = account.isEmpty() ? std::optional(remoteplay::AccountId{}) : remoteplay::accountIdFromBase64(account.toStdString());
+            if (accountId) r.credentials.accountId = *accountId;
+            const auto path = newProfilePath();
+            if (!accountId || !keyFromHex(c.value("regist_key").toString(), r.credentials.registrationKey.data()) ||
+                !keyFromHex(c.value("rp_key").toString(), r.credentials.sessionKey.data()) || path.empty() || !remoteplay::saveProfile(path, r)) {
+                ++skipped; continue;
+            }
+            local.insert(id); ++added;
+            const QString name = c.value("name").toString().simplified();
+            if (!name.isEmpty() && name != QLatin1String("PS5")) lanRename(QString::fromStdWString(path.filename().wstring()), name);
+        }
+        if (added) ps5Load();
+        // Pairings made before the account kept them (or while signed out) go up now
+        unsigned uploads = 0;
+        for (const auto& v : i.ps5ProfileList) {
+            const auto p = v.toMap();
+            const QString id = p.value("consoleId").toString();
+            if (!validConsoleId(id) || remote.contains(id)) continue;
+            remote.insert(id); ++uploads;
+            putAccountConsole(p.value("id").toString());
+        }
+        oviora::log::info("console-sync", std::format("account={} added={} skipped={} uploading={}", consoles.size(), added, skipped, uploads));
+    } catch (...) {
+        oviora::log::warn("console-sync", "remote play folder unavailable; account consoles not merged");
+    }
+#else
+    Q_UNUSED(consoles);
 #endif
 }
 void QmlPlayerBridge::ps5OpenAccountChecker() {
@@ -621,7 +825,7 @@ void QmlPlayerBridge::ps5Cancel() {
     // Cancelling while waiting for a woken console only stops the wait
     if (!impl_->wakeWaitKey.isEmpty()) { impl_->wakeWaitKey.clear(); updateConnection(); return; }
     if (impl_->ps5Busy && impl_->ps5Worker.joinable()) { impl_->ps5Worker.request_stop(); return; }
-    if (impl_->snapshot.remotePlay) stopPlayback();
+    if (impl_->snapshot.remotePlay || impl_->openingSource || !impl_->pendingLiveText.isEmpty()) stopPlayback();
 }
 void QmlPlayerBridge::ps5Calibrate() {
 #ifdef OVIORA_ENABLE_REMOTEPLAY
@@ -646,6 +850,7 @@ void QmlPlayerBridge::tickPs5() {
             i.ps5Profile = r.savedPath;
             WritePrivateProfileStringW(L"RemotePlay", L"LastProfile", i.ps5Profile.c_str(), ps5Settings().c_str());
             const auto status = i.ps5Status; ps5Load(); i.ps5Status = status;
+            putAccountConsole(QString::fromStdWString(r.savedPath));  // kept in the Oviora account too
         }
         if (!r.hosts.empty()) {
             // A found console updates the selected pairing's address only when its
@@ -737,7 +942,10 @@ void QmlPlayerBridge::updateConnection() {
     m["stage"] = stage;
     m["detail"] = detail;
     m["psn"] = i.connectionPsn;
+    m["watching"] = i.connectionWatching && !stage.isEmpty();
     m["console"] = i.connectionName;
+    // The stream's codec as asked of the PS5 (İzlet passes the picture on as it is)
+    m["codec"] = s.remoteStream.requestedProfile.codec == remoteplay::Codec::H264 ? QStringLiteral("h264") : QStringLiteral("h265");
     // The old screen's "this can take a few minutes" note: after 25 s of connecting
     m["slow"] = !stage.isEmpty() && stage != QLatin1String("live") && stage != QLatin1String("failed") && now - i.connectionStartMs > 25000;
 #ifdef OVIORA_ENABLE_REMOTEPLAY

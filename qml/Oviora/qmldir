@@ -66,3 +66,4 @@ OvioraAnimasyon 1.0 OvioraAnimasyon.qml
 ConnectingView 1.0 ConnectingView.qml
 SubtitleFixDialog 1.0 SubtitleFixDialog.qml
 ConsoleKeyboardDialog 1.0 ConsoleKeyboardDialog.qml
+ChatView 1.0 ChatView.qml

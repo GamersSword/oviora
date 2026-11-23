@@ -38,8 +38,8 @@ PushStatus VideoIngress::push(VideoSample sample,HostTime now) {
     if(sample.generation!=generation_)return PushStatus::WrongGeneration;
     if(sample.payload.size()==0 || sample.arrival100ns<0 || now<sample.arrival100ns ||
        !sample.payload.paddingIsZero() || sample.framesLost<0 ||
-       // 960x540: the lower resolution offered with a 720p request (adaptive quality)
-       !((sample.width==1280&&sample.height==720)||(sample.width==1920&&sample.height==1080)||(sample.width==960&&sample.height==540))){
+       // 960x540 / 640x360: lower resolutions from adaptive quality or auto-downgrade
+       !((sample.width==1280&&sample.height==720)||(sample.width==1920&&sample.height==1080)||(sample.width==960&&sample.height==540)||(sample.width==640&&sample.height==360))){
         ++stats_.rejected;recoverLocked();return PushStatus::Malformed;
     }
     const auto nal=inspectAnnexB(sample.payload.bytes(),sample.codec);
@@ -59,9 +59,10 @@ PushStatus VideoIngress::push(VideoSample sample,HostTime now) {
     if(sample.wireFrameIndex){
         const auto seq=sequence_.observe(*sample.wireFrameIndex);
         if(!seq.accepted){++stats_.rejected;return PushStatus::Malformed;}
-        if(seq.gap)recoverLocked();
+        // Do not drop following P-frames or request an IDR on a frame gap: Chiaki's
+        // VideoReceiver already handles loss via CORRUPTFRAME + 16-frame reference recovery,
+        // and rejecting here returns false to VideoReceiver, breaking its reference list.
     }
-    if(sample.framesLost>0 || sample.referenceRecovered)recoverLocked();
     if(now-sample.arrival100ns>limits_.maxAge100ns){++stats_.dropped;recoverLocked();return PushStatus::WaitingForIdr;}
     if(!config_ || sample.codec!=config_->codec || sample.width!=config_->width || sample.height!=config_->height){
         ++stats_.dropped;recoverLocked();return PushStatus::WaitingForIdr;
@@ -69,7 +70,7 @@ PushStatus VideoIngress::push(VideoSample sample,HostTime now) {
     const auto headerBytes=config_->payload.size();
     if(sample.payload.size()>limits_.maxBytes-headerBytes){++stats_.dropped;recoverLocked();return PushStatus::WaitingForIdr;}
     if(expiredLocked(now)||queue_.size()>=limits_.maxFrames||payloadBytes_>limits_.maxBytes-headerBytes-sample.payload.size())recoverLocked();
-    if(waiting_&&!nal.idr){++stats_.dropped;pendingIdr_=true;return PushStatus::WaitingForIdr;}
+    if(waiting_&&!nal.idr&&!sample.keyframe){++stats_.dropped;pendingIdr_=true;return PushStatus::WaitingForIdr;}
     const bool reset=waiting_;
     queue_.push_back(QueuedVideo{std::move(sample),reset?config_:nullptr,stats_.epoch,reset});
     payloadBytes_+=queue_.back().sample.payload.size();waiting_=false;

@@ -21,6 +21,11 @@ Rectangle {
     readonly property string linkedAccount: typeof platform !== "undefined" && platform ? (platform.psnAccountId || "") : ""
     readonly property bool psnLinked: typeof platform !== "undefined" && platform && platform.psnLinked === true
     readonly property var savedAccounts: typeof platform !== "undefined" && platform && platform.psnAccounts ? platform.psnAccounts : []
+    // Every PSN account linked to the Oviora account (several possible); a PS5 is registered with the one it is on
+    readonly property var linkedAccounts: typeof platform !== "undefined" && platform && platform.psnLinks ? platform.psnLinks.filter(l => l.account_id && l.account_id.length > 0) : []
+    function isLinkedId(id) {
+        return id.length > 0 && (id === linkedAccount || linkedAccounts.some(l => l.account_id === id))
+    }
     readonly property bool streamerMode: oviora.preferences.streamerMode === true
     property string sentAccountId: ""
     readonly property bool busy: oviora.ps5.busy === true
@@ -288,7 +293,7 @@ Rectangle {
                     // Linked, but another id is typed in (e.g. editing): back to the linked account
                     S.PillButton {
                         kind: "quiet"
-                        visible: dialog.linkedAccount.length > 0 && accountId.text.trim() !== dialog.linkedAccount
+                        visible: dialog.linkedAccount.length > 0 && !dialog.isLinkedId(accountId.text.trim())
                         text: qsTr("Bağlı hesabımı kullan")
                         onClicked: accountId.text = dialog.linkedAccount
                     }
@@ -296,6 +301,26 @@ Rectangle {
                         kind: "quiet"
                         text: qsTr("Kullanıcı adıyla bul")
                         onClicked: oviora.ps5OpenAccountChecker()
+                    }
+                }
+            }
+            // Several PSN accounts linked: pick the one the console is signed in with
+            S.SettingRow {
+                stacked: true
+                visible: dialog.linkedAccounts.length > 1
+                title: qsTr("Bağlı PSN hesapların")
+                Flow {
+                    width: parent.width
+                    spacing: 8
+                    Repeater {
+                        model: dialog.linkedAccounts
+                        delegate: S.PillButton {
+                            required property var modelData
+                            compact: true
+                            kind: accountId.text.trim() === modelData.account_id ? "primary" : "secondary"
+                            text: dialog.streamerMode || !modelData.name ? "PSN " + modelData.n : modelData.name
+                            onClicked: accountId.text = modelData.account_id
+                        }
                     }
                 }
             }
@@ -311,7 +336,7 @@ Rectangle {
                         delegate: RowLayout {
                             spacing: 4
                             readonly property bool selected: accountId.text.trim() === modelData.id
-                            readonly property bool isLinked: dialog.linkedAccount.length > 0 && modelData.id === dialog.linkedAccount
+                            readonly property bool isLinked: dialog.isLinkedId(modelData.id)
                             readonly property string baseName: dialog.streamerMode
                                 ? qsTr("PSN hesabı %1").arg(index + 1)
                                 : (modelData.name && modelData.name.length > 0 ? modelData.name : isLinked ? qsTr("Bağlı hesap") : qsTr("PSN hesabı %1").arg(index + 1))

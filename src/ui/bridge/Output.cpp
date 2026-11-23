@@ -6,6 +6,21 @@ namespace oviora::ui {
 // it exists (HDR output becomes .jxr).
 void QmlPlayerBridge::tickScreenshot() {
     auto& i = *impl_;
+    // The stream menu's backdrop: shown when written; an HDR output writes .jxr instead, which is dropped
+    if(!i.pendingBackdrop.isEmpty()){
+        const QString written=QDir::fromNativeSeparators(QString::fromStdWString(i.snapshot.savedFramePath));
+        const QString hdr=QFileInfo(i.pendingBackdrop).path()+QLatin1Char('/')+QFileInfo(i.pendingBackdrop).completeBaseName()+QStringLiteral(".jxr");
+        if(written==i.pendingBackdrop&&!i.backdropWanted){
+            QFile::remove(written);i.pendingBackdrop.clear();
+        }else if(written==i.pendingBackdrop){
+            i.menuBackdrop=QUrl::fromLocalFile(written).toString();i.pendingBackdrop.clear();
+            emit menuBackdropChanged();
+        }else if(written==hdr){
+            QFile::remove(hdr);i.pendingBackdrop.clear();
+        }else if(QDateTime::currentMSecsSinceEpoch()>i.pendingBackdropDeadline){
+            QFile::remove(i.pendingBackdrop);i.pendingBackdrop.clear();
+        }
+    }
     if(!i.pendingScreenshot.isEmpty()){
         const QString written=QDir::fromNativeSeparators(QString::fromStdWString(i.snapshot.savedFramePath));
         const QString hdr=QFileInfo(i.pendingScreenshot).path()+QLatin1Char('/')+QFileInfo(i.pendingScreenshot).completeBaseName()+QStringLiteral(".jxr");

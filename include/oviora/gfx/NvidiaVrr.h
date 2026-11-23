@@ -8,7 +8,8 @@
 #include <string>
 namespace oviora::gfx {
 // Variable refresh (G-SYNC / G-SYNC Compatible) state of the monitor showing
-// a window. Oviora never changes the driver setting; the user enables it in
+// a window. Oviora never changes the global setting (its own program profile turns G-SYNC
+// off for Oviora only, NvidiaAppProfile.h); the user enables it in
 // the NVIDIA Control Panel, and the 可变刷新 switch only decides how Oviora
 // presents when it is available (VideoPresenter::configurePresentation).
 // Minimal ABI declarations checked against NVIDIA/nvapi public interfaces

@@ -56,6 +56,7 @@ struct VideoSample {
     std::uint32_t width = 0, height = 0;
     std::int32_t framesLost = 0;
     bool referenceRecovered = false; // NOT a FEC success or a keyframe indicator.
+    bool keyframe = false;           // Watch mode IRAP override (e.g. H.265 CRA).
     HostTime arrival100ns = 0;
 };
 struct NalInfo {

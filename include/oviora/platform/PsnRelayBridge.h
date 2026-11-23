@@ -4,6 +4,7 @@
 #include "oviora/remoteplay/ChiakiBackend.h"
 
 #include <QPointer>
+#include <QElapsedTimer>
 #include <QString>
 
 #include "oviora/platform/OvioraServer.h"
@@ -27,4 +28,7 @@ private:
 	QPointer<OvioraServer> srv;
 	QString sid;
 	bool closed = false;
+	// Timing logs: since the relay opened, and the last state the server reported
+	QElapsedTimer opened_at;
+	QString last_state;
 };

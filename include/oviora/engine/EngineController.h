@@ -21,7 +21,7 @@
 #include "oviora/engine/DisplayStateService.h"
 #include "oviora/engine/SubtitleTap.h"
 namespace oviora::source { struct RemotePlayConnectDesc; class RemotePlaySessionSource; }
-namespace oviora::remoteplay { struct ControllerState;struct ControllerFeedback; }
+namespace oviora::remoteplay { struct ControllerState;struct ControllerFeedback;struct MediaRelayCallbacks; }
 namespace oviora::sink { struct RgbaImage; }
 namespace oviora::gfx { class D3D12DeviceContext; class CommandSlotRing; }
 namespace oviora::engine {
@@ -194,7 +194,10 @@ public:
     void remotePlayGotoBed();
     void remotePlayMicrophone(bool on);
     void remotePlayMicrophonePcm(std::vector<std::int16_t> block);
+    void setRemotePlayMediaTee(remoteplay::MediaRelayCallbacks tee);
+    void requestRemotePlayIdr();
 #endif
+    void openTestFile(HWND, const std::wstring& path);
     void stop();
     void comparison(int mode,bool base,float split=.5f){comparisonMode_=mode;comparisonBase_=base;comparisonSplit_=std::clamp(split,0.0f,1.0f);}
     void pause(bool p);
@@ -214,6 +217,9 @@ public:
     // Oviora: a region of the processed frames for the subtitle translation (SubtitleTap.h). Any thread.
     void subtitleTap(bool enabled,float x,float y,float w,float h,unsigned intervalMs){subtitleTap_->configure(enabled,x,y,w,h,intervalMs);}
     bool takeSubtitleSample(SubtitleSample& out){return subtitleTap_->take(out);}
+    // Oviora: the stream menu's live backdrop, the same kind of region copy (the strip under the drawer). Any thread.
+    void backdropTap(bool enabled,float x,float y,float w,float h,unsigned intervalMs){backdropTap_->configure(enabled,x,y,w,h,intervalMs);}
+    bool takeBackdropSample(SubtitleSample& out){return backdropTap_->take(out);}
 private:
     void run(HWND,std::wstring,PlayerOptions,std::shared_ptr<source::RemotePlayConnectDesc> remoteRequest={});
     void runLargeImage(HWND,const sink::RgbaImage&,PlayerOptions,gfx::D3D12DeviceContext&,gfx::CommandSlotRing&);
@@ -227,11 +233,13 @@ private:
     uint64_t presentationRevision_=1;
     std::shared_ptr<FrameFlowWindow> activeFlow_;
     std::shared_ptr<source::RemotePlaySessionSource> activeRemote_;
+    std::shared_ptr<const remoteplay::MediaRelayCallbacks> remoteMediaTee_;
     PreviewView previewView_;
     std::wstring savePath_;
     // Declared before worker_: it outlives the engine thread's presenters.
     DisplayStateService displayStates_;
     std::shared_ptr<SubtitleTapShared> subtitleTap_=std::make_shared<SubtitleTapShared>();
+    std::shared_ptr<SubtitleTapShared> backdropTap_=std::make_shared<SubtitleTapShared>();
     std::thread worker_;
     std::condition_variable wake_;std::function<void()> pending_;bool shutdown_=false,busy_=false;
     // Owner-thread stall detection (field logs(15)); created before worker_ starts.

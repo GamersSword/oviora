@@ -137,7 +137,24 @@ void EngineController::remotePlayLoginPin(std::string pin){std::lock_guard lock(
 void EngineController::remotePlayGotoBed(){std::lock_guard lock(mutex_);if(activeRemote_)activeRemote_->gotoBed();}
 void EngineController::remotePlayMicrophone(bool on){std::lock_guard lock(mutex_);if(activeRemote_)activeRemote_->microphone(on);}
 void EngineController::remotePlayMicrophonePcm(std::vector<std::int16_t> block){std::lock_guard lock(mutex_);if(activeRemote_)activeRemote_->microphonePcm(std::move(block));}
+void EngineController::setRemotePlayMediaTee(remoteplay::MediaRelayCallbacks tee){
+    const bool enable=bool(tee.onVideo)||bool(tee.onAudio);
+    auto shared=enable?std::make_shared<const remoteplay::MediaRelayCallbacks>(tee):nullptr;
+    std::shared_ptr<source::RemotePlaySessionSource> remote;
+    {std::lock_guard lock(mutex_);remoteMediaTee_=std::move(shared);remote=activeRemote_;}
+    if(remote)remote->setMediaTee(std::move(tee));
+}
+void EngineController::requestRemotePlayIdr(){
+    std::shared_ptr<source::RemotePlaySessionSource> remote;
+    {std::lock_guard lock(mutex_);remote=activeRemote_;}
+    if(remote)remote->requestIdr();
+}
 #endif
+void EngineController::openTestFile(HWND window,const std::wstring& path){
+    PlayerOptions opts;
+    {std::lock_guard lock(mutex_);snapshot_={};requestedPlaybackRate_=1;activeFlow_.reset();previewView_={};fgMultiFrameMaxCap_=0;xessMaxInterpolatedFramesCap_=0;fsrMaxGeneratedFramesCap_=0;snapshot_.sessionId=++sessionId_;snapshot_.transport=TransportState::Opening;savePath_.clear();opts=PlayerOptions::from(desired_,desiredNodeOrder_);opts.settings.revision=++nextRevision_;desired_.revision=opts.settings.revision;snapshot_.desired=desired_;}
+    post([this,window,path,opts]{paused_=false;seekSeconds_=-1;run(window,path,opts);});
+}
 void EngineController::stop(){
     {std::lock_guard lock(mutex_);stop_=true;pending_={};snapshot_.transport=busy_?TransportState::Stopping:TransportState::Empty;}
     wake_.notify_one();
@@ -275,7 +292,11 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     auto remote=remoteRequest?std::make_shared<source::RemotePlaySessionSource>():nullptr;
     const bool isRemote=bool(remote);
-    {std::lock_guard lock(mutex_);activeRemote_=remote;}
+    {
+        std::shared_ptr<const remoteplay::MediaRelayCallbacks> tee;
+        {std::lock_guard lock(mutex_);activeRemote_=remote;tee=remoteMediaTee_;}
+        if(remote&&tee)remote->setMediaTee(*tee);
+    }
 #else
     (void)remoteRequest;const bool isRemote=false;
 #endif
@@ -666,6 +687,7 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
             pipeline::EnhanceGraph::FrameOutputs out;bool reset=true,hasOutput=false,audioRebuffering=false,seekPreviewPending=false;
             // Oviora: subtitle region copies of the processed real frames (SubtitleTap.h); never waits.
             SubtitleTap subtitleTapper(subtitleTap_);OnExit subtitleTapDone{[&]{subtitleTapper.finish(ctx);}};
+            SubtitleTap backdropTapper(backdropTap_);OnExit backdropTapDone{[&]{backdropTapper.finish(ctx);}};
             bool initialRemoteFramePending=isStream;
             bool initialFileFramePending=!isImage&&!isCapture;
             uint64_t activeSeekId=0;
@@ -2194,6 +2216,7 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
                 if(out.fgReduced||previewFgMultiplier!=options.fgMultiplier){std::lock_guard lock(mutex_);snapshot_.previewFgMultiplier=out.fgReduced?2u:previewFgMultiplier;}
                 reset=false;hasOutput=true;
                 if(!isImage)subtitleTapper.service(ctx,ring,graph->videoFrameResource(out.videoSlot),graph->outputFormat());
+                if(!isImage)backdropTapper.service(ctx,ring,graph->videoFrameResource(out.videoSlot),graph->outputFormat());
                 const auto processDone=Clock::now();
                 // The restored graph's first frame has empty temporal history.
                 // It is the failed transaction's rollback warmup, not another

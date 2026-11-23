@@ -140,6 +140,38 @@ inline bool douyinLiveCompanionRunning() {
     });
 }
 
+// Combined single-snapshot scan for periodic monitoring off the GUI thread.
+struct ProcessHookScan {
+    bool nvidiaOverlay = false;
+    bool gamePP = false;
+    bool douyinCompanion = false;
+};
+
+inline ProcessHookScan scanProcessHooks() {
+    ProcessHookScan out;
+    const HANDLE raw = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (raw == INVALID_HANDLE_VALUE) return out;
+    struct Snapshot { HANDLE handle; ~Snapshot() { CloseHandle(handle); } } snapshot{raw};
+    PROCESSENTRY32W process{};
+    process.dwSize = sizeof(process);
+    static constexpr wchar_t launcher[] = {0x76F4, 0x64AD, 0x4F34, 0x4FA3, L'.', L'e', L'x', L'e', 0};
+    for (BOOL found = Process32FirstW(snapshot.handle, &process); found;
+         found = Process32NextW(snapshot.handle, &process)) {
+        if (!out.nvidiaOverlay &&
+            (_wcsicmp(process.szExeFile, L"NVIDIA Overlay.exe") == 0 ||
+             _wcsicmp(process.szExeFile, L"NVIDIA Share.exe") == 0))
+            out.nvidiaOverlay = true;
+        else if (!out.gamePP && _wcsnicmp(process.szExeFile, L"GamePP", 6) == 0)
+            out.gamePP = true;
+        else if (!out.douyinCompanion &&
+                 (_wcsicmp(process.szExeFile, launcher) == 0 ||
+                  _wcsicmp(process.szExeFile, L"MediaSDK_Server.exe") == 0))
+            out.douyinCompanion = true;
+        if (out.nvidiaOverlay && out.gamePP && out.douyinCompanion) break;
+    }
+    return out;
+}
+
 // RTSS reads this variable from the process it hooks whenever it (re)loads its profile for
 // it ("Name,value[,Name,value…]", RTSSHooks64.dll); EnableOSD is one of the properties it
 // accepts. With EnableOSD,0 it still counts frames but never draws in this process.

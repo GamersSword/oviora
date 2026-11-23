@@ -80,7 +80,7 @@ bool RemotePlaySource::connect(const RemotePlayConnectDesc& desc)
         oviora::log::error("remoteplay", "connect refused: previous session did not stop successfully");
         return false;
     }
-    if (desc.request.video.validate() || (!desc.request.psn && !remoteplay::validHost(desc.request.host))) {
+    if (desc.request.video.validate() || (!desc.request.psn && !desc.request.watch && !remoteplay::validHost(desc.request.host))) {
         oviora::log::error("remoteplay", "connect rejected: invalid host or video profile");
         return false;
     }
@@ -93,6 +93,7 @@ bool RemotePlaySource::connect(const RemotePlayConnectDesc& desc)
     request_.credentials.registrationKey = desc.request.credentials.registrationKey;
     request_.credentials.sessionKey = desc.request.credentials.sessionKey;
     request_.psn = desc.request.psn;
+    request_.watch = desc.request.watch;
     decodeMode_=desc.decodeMode;decodeDevice_=desc.decodeDevice;hardwareFallback_=false;
     discardMedia_=desc.controlOnly;
 
@@ -131,6 +132,10 @@ bool RemotePlaySource::connect(const RemotePlayConnectDesc& desc)
     info_.color.matrix = pipeline::YuvMatrix::BT709;
     info_.color.matrixAssumed = true;
     info_.color.displayReferred709 = true;
+    // Oviora: the PS5 picture as the same monitor shows it over HDMI. Decoding with BT.1886 (gamma 2.4) and
+    // encoding sRGB for the sink darkened midtones and shadows (field report 2026-11-19: "much darker than HDMI");
+    // keep the RGB code values, as desktop SDR media does. HDR (PQ) is unaffected.
+    info_.color.preserveSdrCodeValues = true;
     info_.color.reconstructChroma = desc.highQualitySampling;
     info_.color.transfer = pipeline::TransferFunction::BT709;
     info_.color.transferAssumed = true;
@@ -288,7 +293,11 @@ bool RemotePlaySource::drainDecoder(std::uint64_t sourceIndex, const pipeline::F
             return false;
         }
         pipeline::FramePacket packet = stamp->packet;
+        // PS5 streams decode in order: stamps older than this frame belong to frames the decoder dropped
+        // (broken by a lost packet) and never come; kept, they filled the 64 slots and stopped decoding
+        const auto decodedId = stamp->id;
         packetStamps_.erase(stamp);
+        while (!packetStamps_.empty() && packetStamps_.front().id < decodedId) packetStamps_.pop_front();
         packet.sequence = ++sequence_;
         auto fallback=info_.color;
         // A previous stream profile's explicit siting must not survive a new
@@ -345,16 +354,17 @@ bool RemotePlaySource::submitPacket(std::span<const std::uint8_t> bytes,
     if (!decoderReady_ || bytes.empty()) return false;
     inbox_->decodeStarted(remoteplay::monotonic100ns(),sourcePacket.arrivalHost100ns);
     struct Finish {remoteplay::SessionInbox& inbox;~Finish(){inbox.decodeFinished(remoteplay::monotonic100ns());}} finish{*inbox_};
-    AVPacket* packet = av_packet_alloc();
+    if (!submitPacketBuf_) submitPacketBuf_ = av_packet_alloc();
+    AVPacket* packet = submitPacketBuf_;
     if (packet == nullptr || av_new_packet(packet, static_cast<int>(bytes.size())) < 0) {
-        av_packet_free(&packet);
         return false;
     }
+    struct PacketGuard { AVPacket* p; ~PacketGuard() { av_packet_unref(p); } } guard{packet};
     std::memcpy(packet->data, bytes.data(), bytes.size());
-    if (packetStamps_.size() >= 64 || nextPacketId_ == INT64_MAX) {
-        av_packet_free(&packet);
+    if (nextPacketId_ == INT64_MAX) {
         return false;
     }
+    while (packetStamps_.size() >= 64) packetStamps_.pop_front();
     packet->pts = nextPacketId_++;
     packet->dts = AV_NOPTS_VALUE;
     packetStamps_.push_back({packet->pts, sourcePacket});
@@ -373,7 +383,6 @@ bool RemotePlaySource::submitPacket(std::span<const std::uint8_t> bytes,
         ok = false;
         break;
     }
-    av_packet_free(&packet);
     return ok;
 }
 
@@ -434,6 +443,11 @@ SourceReadStatus RemotePlaySource::read(pipeline::FramePacket& out, const AVFram
         payload = combined;
     }
     if (!submitPacket(payload, sourceIndex, sourcePacket)) {
+        // A frame broken by a lost packet: skipped, the next ones decode on (the console's own recovery repairs
+        // the picture), as the old Yakamoz did. Only many in a row reset the decoder and wait for a key frame.
+        if (++decodeErrorsInRow_ < 10) return SourceReadStatus::Waiting;
+        decodeErrorsInRow_ = 0;
+        oviora::log::warn("remoteplay-decode", "10 frames in a row failed to decode: resetting the decoder");
         flushDecoder();
         if(codecContext_&&codecContext_->hw_device_ctx&&!hardwareFallback_){
             if(decodeMode_==RemotePlayConnectDesc::DecodeMode::Hardware){
@@ -447,6 +461,7 @@ SourceReadStatus RemotePlaySource::read(pipeline::FramePacket& out, const AVFram
         inbox_->decodeFailed(sample.generation);
         return SourceReadStatus::Waiting;
     }
+    decodeErrorsInRow_ = 0;
     if (ready_.empty()) return SourceReadStatus::Waiting;
     auto item = std::move(ready_.front());
     ready_.pop_front();
@@ -527,6 +542,7 @@ void RemotePlaySource::close() noexcept
         } catch (...) { stopFailed_ = true; }
     }
     flushDecoder();
+    av_packet_free(&submitPacketBuf_);
     av_frame_free(&decoderFrame_);
     avcodec_free_context(&codecContext_);
     decoderReady_ = false;
@@ -534,6 +550,8 @@ void RemotePlaySource::close() noexcept
     audioBlock_.reset(); audioAnchorSample_.reset(); audioOffset_ = 0;
     audioNextSample_ = 0; audioRate_ = 0; wireSequence_.reset();
     request_.credentials = remoteplay::PairingCredentials{};
+    request_.psn.reset();
+    request_.watch.reset();
     info_ = SourceInfo{};
 }
 

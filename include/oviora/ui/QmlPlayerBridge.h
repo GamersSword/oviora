@@ -36,8 +36,10 @@
 
 class QQmlEngine;
 class QWindow;
+class QJsonArray;
+class QJsonObject;
 struct tagRAWMOUSE;
-namespace oviora::remoteplay { struct ControllerState; }
+namespace oviora::remoteplay { struct ControllerState; struct WatchRoute; }
 namespace oviora::ui {
 
 
@@ -175,6 +177,8 @@ class QmlPlayerBridge : public QObject {
     Q_PROPERTY(QString uiLanguage READ uiLanguage NOTIFY preferencesChanged)
     Q_PROPERTY(QString screenshotDirectory READ screenshotDirectory NOTIFY preferencesChanged)
     Q_PROPERTY(QString lastScreenshot READ lastScreenshot NOTIFY preferencesChanged)
+    // The Ctrl+O drawer's ground: a file URL of the frame taken when it opened ("" while none)
+    Q_PROPERTY(QString menuBackdrop READ menuBackdrop NOTIFY menuBackdropChanged)
     Q_PROPERTY(QString dataDirectory READ dataDirectory CONSTANT)
     // Rebindable shortcuts: action -> key sequence text (defaults merged in).
     Q_PROPERTY(QVariantMap shortcuts READ shortcuts NOTIFY preferencesChanged)
@@ -631,8 +635,18 @@ public:
     // Oviora: a PS5 over the internet (PSN hole punching), leased by the Oviora server.
     // route is a remoteplay::PsnRoute; the video settings are the PS5 dialog's ones.
     bool connectPsn(std::shared_ptr<const void> route, const QString& nickname);
+    // Oviora: watch a friend's "İzlet" broadcast inside the native player.
+    bool connectWatch(std::shared_ptr<remoteplay::WatchRoute> route, const QString& title);
     // A PS5 session is running or opening.
     bool remotePlayActive() const;
+    // Oviora: PS5s paired on the home network are kept in the user's Oviora account. The app hands
+    // over the server's call(), which does nothing while signed out.
+    using AccountCall = std::function<void(const QString& action, const QJsonObject& body,
+                                           std::function<void(const QJsonObject& reply, const QString& error)> done)>;
+    void setAccountCall(AccountCall call);
+    // At start and at sign-in: the account's consoles missing here become pairings, and the
+    // pairings the account lacks are uploaded.
+    void syncAccountConsoles();
     Q_INVOKABLE void ps5Wake();
     Q_INVOKABLE void ps5Forget();
     Q_INVOKABLE void ps5OpenAccountChecker();
@@ -1061,6 +1075,7 @@ public:
     Q_INVOKABLE void openSubtitleDialog();
     Q_INVOKABLE void togglePlayPause();
     Q_INVOKABLE void stopPlayback();
+    Q_INVOKABLE void openTestVideo(const QString& path);
     // V held down: the engine shows the unprocessed frame until release
     // (AppShell holdOriginal -> engine.comparison(1, false)).
     Q_INVOKABLE void holdOriginal(bool held);
@@ -1070,6 +1085,12 @@ public:
     // fullscreen bar window uses it so only its pill takes the pointer.
     Q_INVOKABLE void setWindowMask(QObject* window, const QRectF& rect);
     Q_INVOKABLE void takeScreenshot();
+    // The stream menu opened: the engine writes the frame on screen as a small-quality JPEG in this app's
+    // cache (not when a screenshot is being written); menuBackdrop names it once it is there
+    Q_INVOKABLE void requestMenuBackdrop(double widthFraction = 0.45, bool leftEdge = false);
+    // The menu closed: the frame is deleted and forgotten
+    Q_INVOKABLE void clearMenuBackdrop();
+    QString menuBackdrop() const;
     Q_INVOKABLE void quit();
     Q_INVOKABLE void restartApplication();
     Q_INVOKABLE void restartForOverlayCompatibility();
@@ -1123,6 +1144,7 @@ signals:
     void subtitlesChanged();
     void subtitleTextChanged();
     void preferencesChanged();
+    void menuBackdropChanged();
     void colourLibraryChanged();
     // Emitted only when the underlying snapshot actually changed, so QML
     // bindings do not re-evaluate 60 times a second for nothing.
@@ -1167,6 +1189,7 @@ private:
     // 抖音直播伴侣 running (gfx/PresentationHooks.h): Realtime GPU priority is capped at
     // High while it runs and restored when it exits; 监控软件兼容 "off" leaves it alone.
     void updateLiveCompanionCompat();
+    void applyLiveCompanionCompat(bool running);
     // The settings the UI is showing: the facade's pending copy, which the
     // engine has been asked to apply. Every settings property reads this, so
     // they can never disagree with each other.
@@ -1183,6 +1206,9 @@ private:
     // connecting note, and start the engine once the page and window have settled.
     void openAfterCinema(const QString& pending, std::function<void()> open);
     void rememberSource(const QString& kind, const QString& label);
+    // Account consoles (bridge/RemotePlay.cpp): uploads one saved pairing; merges the account's list.
+    void putAccountConsole(const QString& profileId);
+    void takeAccountConsoles(const QJsonArray& consoles);
     // Edits either mask node in the active chain; rolls back when refused.
     QVariantMap maskState(bool allEffects) const;
     bool editProtection(const std::function<bool(engine::ChainNode&)>& edit,bool allEffects=false);

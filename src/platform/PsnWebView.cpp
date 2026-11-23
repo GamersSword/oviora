@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 
 #include "oviora/platform/PsnWebView.h"
+#include "oviora/platform/SecretWipe.h"
 #include "oviora/RuntimePaths.h"
 
 namespace PSNAuth {
 // Where Sony's remote play sign-in ends; the Oviora server turns this address into the PSN login
 static const std::string REDIRECT_PAGE = "https://remoteplay.dl.playstation.net/remoteplay/redirect";
+// Oyun bilgisi: Sony's SSO cookie page, read in the same browser after the sign-in (JSON with the value)
+static const char *SSO_COOKIE_PAGE = "https://ca.account.sony.com/api/v1/ssocookie";
 }
 
 #include <QCoreApplication>
@@ -14,18 +17,121 @@ static const std::string REDIRECT_PAGE = "https://remoteplay.dl.playstation.net/
 #include <QGuiApplication>
 #include <QLoggingCategory>
 #include <QMetaObject>
+#include <QPointer>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QWindow>
 
+#include <cwchar>
 #include <functional>
 #include <memory>
 #include <string>
 #include <thread>
 
 Q_LOGGING_CATEGORY(psnWebLog, "oviora.psnweb")
+
+// Only Sony's own pages (https, Sony / PlayStation hosts) are ever loaded
+static bool isSonyUrl(const QUrl &url)
+{
+	const QString host = url.host().toLower();
+	return url.scheme() == "https" && (host == "sony.com" || host.endsWith(".sony.com") || host.endsWith(".sonyentertainmentnetwork.com")
+		|| host.endsWith(".playstation.com") || host.endsWith(".playstation.net"));
+}
+
+static bool isSsoCookiePage(const QString &address)
+{
+	const QUrl url(address);
+	const QUrl sso(QString::fromLatin1(PSNAuth::SSO_COOKIE_PAGE));
+	return url.scheme() == "https" && url.host().compare(sso.host(), Qt::CaseInsensitive) == 0 && url.path() == sso.path();
+}
+
+/**
+ * The value of "npsso" from ExecuteScript's answer to document.body.innerText: that answer is the page's
+ * text as a JSON string, and the text is Sony's JSON object. Read by hand into buffers reserved up front
+ * (no reallocation leaves a stray copy, no JSON document keeps one); the text buffer is wiped here, the
+ * result by the caller. Empty when the page has no usable value.
+ */
+static QByteArray npssoFromScriptResult(const wchar_t *json)
+{
+	QByteArray value;
+	if(!json || json[0] != L'"')
+		return value;
+	const std::size_t len = std::wcslen(json);
+	QByteArray text;
+	text.reserve(qsizetype(len));
+	for(std::size_t i = 1; i < len; ++i)
+	{
+		wchar_t c = json[i];
+		if(c == L'"')
+			break;
+		if(c == L'\\' && i + 1 < len)
+		{
+			c = json[++i];
+			switch(c)
+			{
+				case L'n': c = L'\n'; break;
+				case L'r': c = L'\r'; break;
+				case L't': c = L'\t'; break;
+				case L'b': c = L'\b'; break;
+				case L'f': c = L'\f'; break;
+				case L'u':
+				{
+					unsigned code = 0;
+					int digits = 0;
+					for(; digits < 4 && i + 1 < len; ++digits)
+					{
+						const wchar_t h = json[i + 1];
+						const int v = h >= L'0' && h <= L'9' ? int(h - L'0') : h >= L'a' && h <= L'f' ? int(h - L'a') + 10
+							: h >= L'A' && h <= L'F' ? int(h - L'A') + 10 : -1;
+						if(v < 0)
+							break;
+						code = code * 16 + unsigned(v);
+						++i;
+					}
+					c = digits == 4 ? wchar_t(code) : L'?';
+					break;
+				}
+				default: break;  // \" \\ \/ stand for themselves
+			}
+		}
+		text.append(c > 0 && c < 0x80 ? char(c) : '?');
+	}
+	// {"npsso":"<value>"}: the key, then a quoted value of letters, digits, '-', '_' or '.'
+	auto space = [&text](qsizetype p) {
+		while(p < text.size() && (text.at(p) == ' ' || text.at(p) == '\n' || text.at(p) == '\r' || text.at(p) == '\t'))
+			++p;
+		return p;
+	};
+	qsizetype at = text.indexOf("\"npsso\"");
+	if(at >= 0)
+	{
+		at = space(at + 7);
+		if(at < text.size() && text.at(at) == ':')
+		{
+			at = space(at + 1);
+			if(at < text.size() && text.at(at) == '"')
+			{
+				static const qsizetype MAX = 512;
+				value.reserve(MAX);
+				qsizetype p = at + 1;
+				for(; p < text.size() && value.size() < MAX; ++p)
+				{
+					const char ch = text.at(p);
+					if((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.')
+						value.append(ch);
+					else
+						break;
+				}
+				if(p >= text.size() || text.at(p) != '"' || value.size() < 16)
+					SecretWipe::wipe(value);
+			}
+		}
+	}
+	SecretWipe::wipe(text);
+	return value;
+}
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -167,6 +273,13 @@ struct PsnWebView::Impl
 	EventRegistrationToken nav_start = {}, nav_done = {}, new_window = {}, resource = {};
 #endif
 	bool creating = false, closing = false, visible = true, test_redirect_sent = false;
+	// Oyun bilgisi: the linked PSN account (> 0) the sign-in is for; reading: the SSO page is being read
+	// (the browser is hidden then, so the value is never on screen); script: its text was asked for
+	int wide_link = 0;
+	bool wide_reading = false, wide_script = false;
+	// "PSN hesabını bağla" + "Oyun bilgisini de aç": link_wide asked for it; held: the redirect was caught
+	// and the page waits hidden for the linked account's id; linked: the current SSO read is one of these
+	bool link_wide = false, held = false, linked = false;
 	QUrl pending_url;
 	QRectF rect;
 	quint64 generation = 0;  // an open() after close() must not get the old environment's answers
@@ -304,7 +417,7 @@ void PsnWebView::applyBounds()
 	r.right = LONG(qRound((d->rect.x() + d->rect.width()) * dpr));
 	r.bottom = LONG(qRound((d->rect.y() + d->rect.height()) * dpr));
 	d->controller->put_Bounds(r);
-	d->controller->put_IsVisible(d->visible && !d->closing && d->rect.width() > 1 && d->rect.height() > 1);
+	d->controller->put_IsVisible(d->visible && !d->closing && !d->wide_reading && !d->held && d->rect.width() > 1 && d->rect.height() > 1);
 #endif
 }
 
@@ -328,13 +441,14 @@ void PsnWebView::setVisible(bool visible)
 void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 {
 	// Only Sony's sign-in pages (the address comes from the server or the pairing dialog)
-	const QString host = url.host().toLower();
-	if(url.scheme() != "https" || !(host == "sony.com" || host.endsWith(".sony.com") || host.endsWith(".sonyentertainmentnetwork.com")
-		|| host.endsWith(".playstation.com") || host.endsWith(".playstation.net")))
+	if(!isSonyUrl(url))
 	{
 		qWarning("PsnWebView: refused a non-Sony address");
 		return;
 	}
+	// A page still held for (or reading) a linked account's Oyun bilgisi is never reused for a new sign-in
+	if(d->held || d->linked)
+		close();
 	d->rect = QRectF(x, y, w, h);
 	d->pending_url = url;
 	d->closing = false;
@@ -357,6 +471,11 @@ void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 		setState("error", tr("Microsoft Edge WebView2 bulunamadı."));
 		return;
 	}
+	if(d->env)
+	{
+		d->env->Release();
+		d->env = nullptr;
+	}
 	const QString folder = dataFolder();
 	QDir(folder).removeRecursively();
 	QDir().mkpath(folder);
@@ -364,50 +483,55 @@ void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 	const quint64 gen = ++d->generation;
 	setState("starting");
 	const HWND parent = reinterpret_cast<HWND>(window->winId());
+	QPointer<PsnWebView> self(this);
 	auto env_done = makeHandler<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, HRESULT, ICoreWebView2Environment *>(IID_EnvCompleted,
-		[this, gen, parent](HRESULT hr, ICoreWebView2Environment *env) -> HRESULT {
-			if(gen != d->generation)
+		[self, gen, parent](HRESULT hr, ICoreWebView2Environment *env) -> HRESULT {
+			if(!self || gen != self->d->generation)
 				return S_OK;
 			if(FAILED(hr) || !env)
 			{
-				d->creating = false;
+				self->d->creating = false;
 				qCWarning(psnWebLog) << "WebView2 environment failed" << Qt::hex << hr;
-				setState("error", tr("Tarayıcı penceresi açılamadı (0x%1).").arg(quint32(hr), 8, 16, QLatin1Char('0')));
+				self->setState("error", tr("Tarayıcı penceresi açılamadı (0x%1).").arg(quint32(hr), 8, 16, QLatin1Char('0')));
 				return S_OK;
 			}
 			env->AddRef();
-			d->env = env;
+			self->d->env = env;
 			auto ctrl_done = makeHandler<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, HRESULT, ICoreWebView2Controller *>(IID_ControllerCompleted,
-				[this, gen](HRESULT hr, ICoreWebView2Controller *controller) -> HRESULT {
-					if(gen != d->generation)
+				[self, gen](HRESULT hr, ICoreWebView2Controller *controller) -> HRESULT {
+					if(!self || gen != self->d->generation)
+					{
+						if(controller)
+							controller->Close();
 						return S_OK;
-					d->creating = false;
+					}
+					self->d->creating = false;
 					if(FAILED(hr) || !controller)
 					{
 						qCWarning(psnWebLog) << "WebView2 controller failed" << Qt::hex << hr;
-						setState("error", tr("Tarayıcı penceresi açılamadı (0x%1).").arg(quint32(hr), 8, 16, QLatin1Char('0')));
+						self->setState("error", tr("Tarayıcı penceresi açılamadı (0x%1).").arg(quint32(hr), 8, 16, QLatin1Char('0')));
 						return S_OK;
 					}
 					controller->AddRef();
-					d->controller = controller;
-					controller->get_CoreWebView2(&d->web);
-					if(!d->web)
+					self->d->controller = controller;
+					controller->get_CoreWebView2(&self->d->web);
+					if(!self->d->web)
 					{
-						setState("error", tr("Tarayıcı penceresi açılamadı."));
+						self->setState("error", tr("Tarayıcı penceresi açılamadı."));
 						return S_OK;
 					}
 					ICoreWebView2Settings *settings = nullptr;
-					if(SUCCEEDED(d->web->get_Settings(&settings)) && settings)
+					if(SUCCEEDED(self->d->web->get_Settings(&settings)) && settings)
 					{
 						settings->put_AreDevToolsEnabled(FALSE);
 						settings->put_IsStatusBarEnabled(FALSE);
 						settings->put_AreDefaultContextMenusEnabled(TRUE);
 						settings->Release();
 					}
-					d->web->AddScriptToExecuteOnDocumentCreated(BRAND_SCRIPT, nullptr);
+					self->d->web->AddScriptToExecuteOnDocumentCreated(BRAND_SCRIPT, nullptr);
 					for(const wchar_t *filter : { L"https://*.sony.com/*", L"https://*.sonyentertainmentnetwork.com/*", L"https://*.playstation.com/*", L"https://*.playstation.net/*" })
-						d->web->AddWebResourceRequestedFilter(filter, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
-					d->web->add_WebResourceRequested(makeHandler<ICoreWebView2WebResourceRequestedEventHandler, ICoreWebView2 *, ICoreWebView2WebResourceRequestedEventArgs *>(IID_ResourceRequested,
+						self->d->web->AddWebResourceRequestedFilter(filter, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+					if(auto *h = makeHandler<ICoreWebView2WebResourceRequestedEventHandler, ICoreWebView2 *, ICoreWebView2WebResourceRequestedEventArgs *>(IID_ResourceRequested,
 						[](ICoreWebView2 *, ICoreWebView2WebResourceRequestedEventArgs *args) -> HRESULT {
 							ICoreWebView2WebResourceRequest *request = nullptr;
 							ICoreWebView2HttpRequestHeaders *headers = nullptr;
@@ -420,9 +544,15 @@ void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 							if(request)
 								request->Release();
 							return S_OK;
-						}), &d->resource);
-					d->web->add_NavigationStarting(makeHandler<ICoreWebView2NavigationStartingEventHandler, ICoreWebView2 *, ICoreWebView2NavigationStartingEventArgs *>(IID_NavStarting,
-						[this](ICoreWebView2 *, ICoreWebView2NavigationStartingEventArgs *args) -> HRESULT {
+						}))
+					{
+						self->d->web->add_WebResourceRequested(h, &self->d->resource);
+						h->Release();
+					}
+					if(auto *h = makeHandler<ICoreWebView2NavigationStartingEventHandler, ICoreWebView2 *, ICoreWebView2NavigationStartingEventArgs *>(IID_NavStarting,
+						[self](ICoreWebView2 *, ICoreWebView2NavigationStartingEventArgs *args) -> HRESULT {
+							if(!self)
+								return S_OK;
 							LPWSTR raw = nullptr;
 							args->get_Uri(&raw);
 							const QString uri = wstr(raw);
@@ -432,14 +562,29 @@ void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 								args->put_Cancel(TRUE);
 								qCInfo(psnWebLog) << "Sony's redirect caught and cancelled, handing it to the link flow (code"
 									<< (uri.contains("code=") ? "present)" : "missing)");
-								QMetaObject::invokeMethod(this, [this, uri]() { emit redirected(uri); }, Qt::QueuedConnection);
+								// Oyun bilgisi: the code is not needed (dropped here); the same browser reads the SSO page next
+								if(self->d->wide_link > 0)
+									QMetaObject::invokeMethod(self.data(), [self]() { if(self) self->startWideRead(); }, Qt::QueuedConnection);
+								else
+								{
+									// "Oyun bilgisini de aç": the session is kept, out of sight, for the SSO page after psn_link
+									if(self->d->link_wide && !self->d->held)
+										self->holdForWide();
+									QMetaObject::invokeMethod(self.data(), [self, uri]() { if(self) emit self->redirected(uri); }, Qt::QueuedConnection);
+								}
 							}
 							else
-								setState("loading");
+								self->setState("loading");
 							return S_OK;
-						}), &d->nav_start);
-					d->web->add_NavigationCompleted(makeHandler<ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2 *, ICoreWebView2NavigationCompletedEventArgs *>(IID_NavCompleted,
-						[this](ICoreWebView2 *web, ICoreWebView2NavigationCompletedEventArgs *args) -> HRESULT {
+						}))
+					{
+						self->d->web->add_NavigationStarting(h, &self->d->nav_start);
+						h->Release();
+					}
+					if(auto *h = makeHandler<ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2 *, ICoreWebView2NavigationCompletedEventArgs *>(IID_NavCompleted,
+						[self](ICoreWebView2 *web, ICoreWebView2NavigationCompletedEventArgs *args) -> HRESULT {
+							if(!self)
+								return S_OK;
 							BOOL ok = FALSE;
 							args->get_IsSuccess(&ok);
 							LPWSTR raw = nullptr;
@@ -458,41 +603,88 @@ void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 							}
 							const QUrl src(source);
 							qCInfo(psnWebLog) << "page loaded" << src.host() + src.path() << "ok" << bool(ok) << "status" << int(status) << "http" << http;
+							// Oyun bilgisi: only the SSO page's own load counts (the cancelled redirect's end is ignored;
+							// a page that never comes is caught by startWideRead's timeout). No test hook runs here.
+							if(self->d->wide_reading)
+							{
+								if(!isSsoCookiePage(source) || self->d->wide_script)
+									return S_OK;
+								if(!ok)
+								{
+									self->finishWide(false, tr("Sony'nin sayfası yüklenemedi. İnternet bağlantını kontrol et."));
+									return S_OK;
+								}
+								self->d->wide_script = true;
+								const quint64 scriptGen = self->d->generation;
+								auto read = makeHandler<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>(IID_ScriptDone,
+									[self, scriptGen](HRESULT hr, LPCWSTR json) -> HRESULT {
+										// The value is only ever in this buffer and the request the sink sends
+										QByteArray value = SUCCEEDED(hr) ? npssoFromScriptResult(json) : QByteArray();
+										if(!self || scriptGen != self->d->generation || !self->d->wide_reading)
+										{
+											SecretWipe::wipe(value);
+											return S_OK;
+										}
+										if(value.isEmpty() || !self->wide_sink)
+										{
+											SecretWipe::wipe(value);
+											qCInfo(psnWebLog) << "Oyun bilgisi: Sony's SSO page had no sign-in";
+											self->finishWide(false, tr("Sony girişi okunamadı. Yeniden dene."));
+											return S_OK;
+										}
+										qCInfo(psnWebLog) << "Oyun bilgisi: Sony's sign-in read, handed to the server";
+										self->wide_sink(self->d->wide_link, value, self->d->linked);
+										SecretWipe::wipe(value);
+										self->finishWide(true, QString());
+										return S_OK;
+									});
+								if(FAILED(web->ExecuteScript(L"document.body ? document.body.innerText : ''", read)))
+									self->finishWide(false, tr("Sony girişi okunamadı. Yeniden dene."));
+								read->Release();
+								return S_OK;
+							}
 							// Only when Sony cannot be reached at all is the browser-and-paste way better;
 							// Sony's own error pages (and cancelled navigations) stay on screen
 							const bool unreachable = !ok && status >= COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT
 								&& status <= COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED;
 							if(unreachable)
-								setState("error", tr("Sony'nin sayfası yüklenemedi. İnternet bağlantını kontrol et."));
+								self->setState("error", tr("Sony'nin sayfası yüklenemedi. İnternet bağlantını kontrol et."));
 							else
-								setState("ready");
-							if(qEnvironmentVariableIsSet("YAKAMOZ_TEST_WEBVIEW"))
-								QTimer::singleShot(5000, this, [this]() {
-									if(!d->web)
+								self->setState("ready");
+							// (never during an Oyun bilgisi sign-in: the SSO page's text must not reach the log)
+							if(qEnvironmentVariableIsSet("YAKAMOZ_TEST_WEBVIEW") && self->d->wide_link <= 0 && !self->d->held && !self->d->linked)
+								QTimer::singleShot(5000, self.data(), [self]() {
+									if(!self || !self->d->web || self->d->wide_link > 0 || self->d->wide_reading || self->d->held || self->d->linked)
 										return;
-									d->web->ExecuteScript(L"(navigator.userAgentData ? JSON.stringify(navigator.userAgentData.brands) : '') + ' | ' + document.title + ' | ' + (document.body ? document.body.innerText.slice(0, 200) : '')",
-										makeHandler<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>(IID_ScriptDone, [](HRESULT, LPCWSTR json) -> HRESULT {
-											qCInfo(psnWebLog) << "test: page says" << (json ? QString::fromWCharArray(json) : QString());
-											return S_OK;
-										}));
+									auto *done = makeHandler<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>(IID_ScriptDone, [](HRESULT, LPCWSTR json) -> HRESULT {
+										qCInfo(psnWebLog) << "test: page says" << (json ? QString::fromWCharArray(json) : QString());
+										return S_OK;
+									});
+									self->d->web->ExecuteScript(L"(navigator.userAgentData ? JSON.stringify(navigator.userAgentData.brands) : '') + ' | ' + document.title + ' | ' + (document.body ? document.body.innerText.slice(0, 200) : '')",
+										done);
+									done->Release();
 								});
 							// Testing without a Sony login: the page "finishes" with a made-up redirect
-							if(!unreachable && !d->test_redirect_sent && qEnvironmentVariableIntValue("YAKAMOZ_TEST_WEBVIEW_YONLENDIR") == 1)
+							if(!unreachable && !self->d->test_redirect_sent && self->d->wide_link <= 0 && qEnvironmentVariableIntValue("YAKAMOZ_TEST_WEBVIEW_YONLENDIR") == 1)
 							{
-								d->test_redirect_sent = true;
-								QTimer::singleShot(4000, this, [this]() {
-									if(!d->web)
+								self->d->test_redirect_sent = true;
+								QTimer::singleShot(4000, self.data(), [self]() {
+									if(!self || !self->d->web)
 										return;
 									qCInfo(psnWebLog) << "test: the page navigates to a made-up redirect";
 									const QString js = QStringLiteral("location.href = '%1?code=TESTKOD&cid=00000000-0000-0000-0000-000000000000';")
 										.arg(QString::fromStdString(PSNAuth::REDIRECT_PAGE));
-									d->web->ExecuteScript(reinterpret_cast<LPCWSTR>(js.utf16()), nullptr);
+									self->d->web->ExecuteScript(reinterpret_cast<LPCWSTR>(js.utf16()), nullptr);
 								});
 							}
 							return S_OK;
-						}), &d->nav_done);
+						}))
+					{
+						self->d->web->add_NavigationCompleted(h, &self->d->nav_done);
+						h->Release();
+					}
 					// Links that want a new window stay in this one (no stray browser windows)
-					d->web->add_NewWindowRequested(makeHandler<ICoreWebView2NewWindowRequestedEventHandler, ICoreWebView2 *, ICoreWebView2NewWindowRequestedEventArgs *>(IID_NewWindow,
+					if(auto *h = makeHandler<ICoreWebView2NewWindowRequestedEventHandler, ICoreWebView2 *, ICoreWebView2NewWindowRequestedEventArgs *>(IID_NewWindow,
 						[](ICoreWebView2 *web, ICoreWebView2NewWindowRequestedEventArgs *args) -> HRESULT {
 							LPWSTR raw = nullptr;
 							args->get_Uri(&raw);
@@ -501,19 +693,23 @@ void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 								web->Navigate(raw);
 							CoTaskMemFree(raw);
 							return S_OK;
-						}), &d->new_window);
-					applyBounds();
-					setState("loading");
-					if(d->pending_url.isValid())
-						d->web->Navigate(reinterpret_cast<LPCWSTR>(d->pending_url.toString(QUrl::FullyEncoded).utf16()));
+						}))
+					{
+						self->d->web->add_NewWindowRequested(h, &self->d->new_window);
+						h->Release();
+					}
+					self->applyBounds();
+					self->setState("loading");
+					if(self->d->pending_url.isValid())
+						self->d->web->Navigate(reinterpret_cast<LPCWSTR>(self->d->pending_url.toString(QUrl::FullyEncoded).utf16()));
 					return S_OK;
 				});
 			HRESULT chr = env->CreateCoreWebView2Controller(parent, ctrl_done);
 			ctrl_done->Release();
 			if(FAILED(chr))
 			{
-				d->creating = false;
-				setState("error", tr("Tarayıcı penceresi açılamadı (0x%1).").arg(quint32(chr), 8, 16, QLatin1Char('0')));
+				self->d->creating = false;
+				self->setState("error", tr("Tarayıcı penceresi açılamadı (0x%1).").arg(quint32(chr), 8, 16, QLatin1Char('0')));
 			}
 			return S_OK;
 		});
@@ -531,9 +727,119 @@ void PsnWebView::open(const QUrl &url, qreal x, qreal y, qreal w, qreal h)
 #endif
 }
 
+void PsnWebView::setWideLink(int link)
+{
+	d->wide_link = link > 0 ? link : 0;
+	d->wide_reading = false;
+	d->wide_script = false;
+}
+
+void PsnWebView::setLinkWide(bool on)
+{
+	// Only before the redirect: a page already held stays held
+	if(!d->held)
+		d->link_wide = on;
+}
+
+bool PsnWebView::holdingForWide() const
+{
+	return d->held || d->linked;
+}
+
+void PsnWebView::holdForWide()
+{
+	d->held = true;
+	applyBounds();  // hidden from the redirect on: nothing more of the session is ever on screen
+	qCInfo(psnWebLog) << "PSN link with Oyun bilgisi: page held for the linked account";
+	// psn_link never answering (or its answer lost) must not keep a signed-in page around
+	const quint64 gen = d->generation;
+	QTimer::singleShot(90000, this, [this, gen]() {
+		if(gen == d->generation && d->held)
+		{
+			qCInfo(psnWebLog) << "PSN link with Oyun bilgisi: no linked account in time, page closed";
+			d->held = false;
+			d->linked = true;  // finishWide() below reports it as the soft failure
+			finishWide(false, QString());
+		}
+	});
+}
+
+void PsnWebView::readWideFor(int link)
+{
+	if(!d->held)
+		return;
+	d->held = false;
+	d->link_wide = false;
+	d->linked = true;
+	if(link <= 0 || !d->web)
+	{
+		finishWide(false, QString());
+		return;
+	}
+	d->wide_link = link;
+	startWideRead();
+}
+
+void PsnWebView::startWideRead()
+{
+#ifdef Q_OS_WIN
+	if(!d->web || d->wide_link <= 0 || d->wide_reading)
+		return;
+	const QUrl sso(QString::fromLatin1(PSNAuth::SSO_COOKIE_PAGE));
+	// The same Sony-only rule as open()
+	if(!isSonyUrl(sso))
+	{
+		finishWide(false, tr("Sony girişi okunamadı. Yeniden dene."));
+		return;
+	}
+	d->wide_reading = true;
+	d->wide_script = false;
+	applyBounds();  // hidden from here on: the page's text is never on screen
+	setState("loading");
+	qCInfo(psnWebLog) << "Oyun bilgisi: sign-in done, reading Sony's SSO page";
+	d->web->Navigate(reinterpret_cast<LPCWSTR>(sso.toString(QUrl::FullyEncoded).utf16()));
+	const quint64 gen = d->generation;
+	QTimer::singleShot(20000, this, [this, gen]() {
+		if(gen == d->generation && d->wide_reading)
+			finishWide(false, tr("Sony'nin sayfası yüklenemedi. İnternet bağlantını kontrol et."));
+	});
+#endif
+}
+
+void PsnWebView::finishWide(bool sent, const QString &error)
+{
+	// Stays hidden until it is closed (the SSO page is still in it)
+	d->visible = false;
+	d->wide_reading = false;
+	applyBounds();
+	d->wide_script = false;
+	d->wide_link = 0;
+	d->held = false;
+	const bool linked = d->linked;
+	d->linked = false;
+	if(linked && !sent)
+		qCInfo(psnWebLog) << "PSN link with Oyun bilgisi: Oyun bilgisi not read (the PSN link stays)";
+	// Out of the browser's own callback: the page closes and its folder (cookies, storage, cache) is deleted
+	QMetaObject::invokeMethod(this, [this, sent, error, linked]() {
+		close();
+		// After "PSN hesabını bağla" the popup is gone and the link counts: only a soft word when it failed
+		// (the server's own answer to a sent value comes from OvioraServer)
+		if(!linked)
+			emit wideFinished(sent, error);
+		else if(!sent)
+			emit linkWideFailed();
+	}, Qt::QueuedConnection);
+}
+
 void PsnWebView::close()
 {
 	d->pending_url = QUrl();
+	d->wide_link = 0;
+	d->wide_reading = false;
+	d->wide_script = false;
+	d->link_wide = false;
+	d->held = false;
+	d->linked = false;
 	d->generation++;  // a controller still on its way is dropped
 	d->creating = false;
 #ifdef Q_OS_WIN
@@ -552,17 +858,27 @@ void PsnWebView::close()
 	ICoreWebView2Controller *controller = d->controller;
 	ICoreWebView2 *web = d->web;
 	ICoreWebView2Environment *env = d->env;
+	const EventRegistrationToken nav_start = d->nav_start;
+	const EventRegistrationToken nav_done = d->nav_done;
+	const EventRegistrationToken new_window = d->new_window;
+	const EventRegistrationToken resource = d->resource;
 	d->controller = nullptr;
 	d->web = nullptr;
 	d->env = nullptr;
+	d->nav_start = {};
+	d->nav_done = {};
+	d->new_window = {};
+	d->resource = {};
+	const QString folder = dataFolder();
+	QPointer<PsnWebView> self(this);
 	// Then the browser lets go of the folder and it is deleted
-	auto finish = [this, controller, web, env]() {
+	auto finish = [self, controller, web, env, nav_start, nav_done, new_window, resource, folder]() {
 		if(web)
 		{
-			web->remove_NavigationStarting(d->nav_start);
-			web->remove_NavigationCompleted(d->nav_done);
-			web->remove_NewWindowRequested(d->new_window);
-			web->remove_WebResourceRequested(d->resource);
+			web->remove_NavigationStarting(nav_start);
+			web->remove_NavigationCompleted(nav_done);
+			web->remove_NewWindowRequested(new_window);
+			web->remove_WebResourceRequested(resource);
 			web->Release();
 		}
 		controller->Close();
@@ -570,10 +886,19 @@ void PsnWebView::close()
 		if(env)
 			env->Release();
 		qCInfo(psnWebLog) << "closed, sign-in data cleared";
-		QTimer::singleShot(2500, this, [this]() {
-			if(!d->web && !d->creating)
-				QDir(dataFolder()).removeRecursively();
-		});
+		if(self)
+		{
+			QTimer::singleShot(2500, self.data(), [self, folder]() {
+				if(self && !self->d->web && !self->d->creating)
+					QDir(folder).removeRecursively();
+			});
+		}
+		else if(QCoreApplication *app = QCoreApplication::instance())
+		{
+			QTimer::singleShot(2500, app, [folder]() {
+				QDir(folder).removeRecursively();
+			});
+		}
 	};
 	// Privacy: nothing of the Sony sign-in stays behind (cookies, storage, cache)
 	bool async = false;
@@ -605,15 +930,19 @@ void PsnWebView::close()
 					*done = true;
 					finish();
 				};
+				QObject *ctx = QCoreApplication::instance() ? static_cast<QObject *>(QCoreApplication::instance()) : static_cast<QObject *>(this);
 				auto cleared = makeHandler<ICoreWebView2ClearBrowsingDataCompletedHandler, HRESULT>(IID_ClearDone,
-					[this, once](HRESULT) -> HRESULT {
-						QMetaObject::invokeMethod(this, once, Qt::QueuedConnection);
+					[once, ctxPtr = QPointer<QObject>(ctx)](HRESULT) -> HRESULT {
+						if(ctxPtr)
+							QMetaObject::invokeMethod(ctxPtr.data(), once, Qt::QueuedConnection);
+						else
+							once();
 						return S_OK;
 					});
 				async = SUCCEEDED(profile2->ClearBrowsingDataAll(cleared));
 				cleared->Release();
 				if(async)
-					QTimer::singleShot(3000, this, once);  // never wait forever
+					QTimer::singleShot(3000, ctx, once);  // never wait forever
 				profile2->Release();
 			}
 			if(profile)

@@ -29724,6 +29724,1308 @@
    "tr": "Discord'da sor",
    "en": "Ask on Discord",
    "de": "Auf Discord fragen"
+  },
+  {
+   "zh": "Tuşları ayarla",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Tuşları ayarla",
+   "en": "Set keys",
+   "de": "Tasten einstellen"
+  },
+  {
+   "zh": "Klavye ve fare tuşları",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Klavye ve fare tuşları",
+   "en": "Keyboard and mouse keys",
+   "de": "Tastatur- und Maustasten"
+  },
+  {
+   "zh": "Mesajlar (%1)",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Mesajlar (%1)",
+   "en": "Messages (%1)",
+   "de": "Nachrichten (%1)"
+  },
+  {
+   "zh": "Henüz arkadaşın yok",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Henüz arkadaşın yok",
+   "en": "No friends yet",
+   "de": "Noch keine Freunde"
+  },
+  {
+   "zh": "Mesajlar için giriş yap",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Mesajlar için giriş yap",
+   "en": "Sign in for messages",
+   "de": "Für Nachrichten anmelden"
+  },
+  {
+   "zh": "Arkadaşlarını ana ekrandan ekleyebilirsin; sonra oyundan çıkmadan buradan yazışırsınız.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Arkadaşlarını ana ekrandan ekleyebilirsin; sonra oyundan çıkmadan buradan yazışırsınız.",
+   "en": "You can add friends from the home screen; then you can message them here without leaving the game.",
+   "de": "Freunde kannst du auf dem Startbildschirm hinzufügen; danach schreibt ihr euch hier, ohne das Spiel zu verlassen."
+  },
+  {
+   "zh": "Ana ekranda Oviora hesabına giriş yaptığında arkadaşlarınla oyundan çıkmadan buradan yazışabilirsin.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Ana ekranda Oviora hesabına giriş yaptığında arkadaşlarınla oyundan çıkmadan buradan yazışabilirsin.",
+   "en": "Once you sign in to your Oviora account on the home screen, you can message your friends here without leaving the game.",
+   "de": "Sobald du dich auf dem Startbildschirm bei deinem Oviora-Konto anmeldest, kannst du hier mit deinen Freunden schreiben, ohne das Spiel zu verlassen."
+  },
+  {
+   "zh": "%1 için güvenlik anahtarı değişti. Yeni bir cihaz kurmuş olabilir; emin olmak için güvenlik kodunu ana ekrandaki sohbetten onunla karşılaştır.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "%1 için güvenlik anahtarı değişti. Yeni bir cihaz kurmuş olabilir; emin olmak için güvenlik kodunu ana ekrandaki sohbetten onunla karşılaştır.",
+   "en": "The security key for %1 has changed. They may have set up a new device; to be sure, compare the security code with them in the conversation on the home screen.",
+   "de": "Der Sicherheitsschlüssel von %1 hat sich geändert. Vielleicht wurde ein neues Gerät eingerichtet; vergleiche zur Sicherheit den Sicherheitscode mit dieser Person im Chat auf dem Startbildschirm."
+  },
+  {
+   "zh": "Ctrl+O › Mesajlar",
+   "src": "qml/Oviora/Main.qml",
+   "tr": "Ctrl+O › Mesajlar",
+   "en": "Ctrl+O › Messages",
+   "de": "Strg+O › Nachrichten"
+  },
+  {
+   "zh": "PS5'te oynuyor",
+   "src": "src/platform/DiscordPresence.cpp",
+   "tr": "PS5'te oynuyor",
+   "en": "Playing on PS5",
+   "de": "Spielt auf der PS5"
+  },
+  {
+   "zh": "Kendi PS5'inde",
+   "src": "src/platform/DiscordPresence.cpp",
+   "tr": "Kendi PS5'inde",
+   "en": "On their own PS5",
+   "de": "Auf der eigenen PS5"
+  },
+  {
+   "zh": "Bir arkadaşının PS5'inde",
+   "src": "src/platform/DiscordPresence.cpp",
+   "tr": "Bir arkadaşının PS5'inde",
+   "en": "On a friend's PS5",
+   "de": "Auf der PS5 eines Freundes"
+  },
+  {
+   "zh": "%1'in PS5'inde",
+   "src": "src/platform/DiscordPresence.cpp",
+   "tr": "%1'in PS5'inde",
+   "en": "On %1's PS5",
+   "de": "Auf der PS5 von %1"
+  },
+  {
+   "zh": "Oviora · PS5 uzaktan oynatma",
+   "src": "src/platform/DiscordPresence.cpp",
+   "tr": "Oviora · PS5 uzaktan oynatma",
+   "en": "Oviora · PS5 Remote Play",
+   "de": "Oviora · PS5-Remote-Play"
+  },
+  {
+   "zh": "Discord'da oynadığını göster",
+   "src": "qml/Oviora/ayar/GeneralPage.qml",
+   "tr": "Discord'da oynadığını göster",
+   "en": "Show what you play on Discord",
+   "de": "Auf Discord zeigen, was du spielst"
+  },
+  {
+   "zh": "Yayın sürerken Discord profilinde oyunun adı ve kimin PS5'inde oynadığın görünür.",
+   "src": "qml/Oviora/ayar/GeneralPage.qml",
+   "tr": "Yayın sürerken Discord profilinde oyunun adı ve kimin PS5'inde oynadığın görünür.",
+   "en": "While streaming, your Discord profile shows the game and whose PS5 you are playing on.",
+   "de": "Während des Streams zeigt dein Discord-Profil das Spiel und auf wessen PS5 du spielst."
+  },
+  {
+   "zh": "PSN hesapları",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "PSN hesapları",
+   "en": "PSN accounts",
+   "de": "PSN-Konten"
+  },
+  {
+   "zh": "%1 (ana hesap)",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "%1 (ana hesap)",
+   "en": "%1 (main account)",
+   "de": "%1 (Hauptkonto)"
+  },
+  {
+   "zh": "%1 PS5",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "%1 PS5",
+   "en": "%1 PS5",
+   "de": "%1 PS5"
+  },
+  {
+   "zh": "Bu hesapta PS5 yok",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Bu hesapta PS5 yok",
+   "en": "No PS5 on this account",
+   "de": "Kein PS5 in diesem Konto"
+  },
+  {
+   "zh": "%1 kaldırılsın mı? Bu hesabın PS5'leri ve arkadaşlarınla paylaşımları da kaldırılır; o PS5'lerde oynayan varsa çıkar.",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "%1 kaldırılsın mı? Bu hesabın PS5'leri ve arkadaşlarınla paylaşımları da kaldırılır; o PS5'lerde oynayan varsa çıkar.",
+   "en": "Remove %1? This account's PS5s and their shares with your friends are removed too; anyone playing on those PS5s is disconnected.",
+   "de": "%1 entfernen? Die PS5s dieses Kontos und ihre Freigaben für deine Freunde werden ebenfalls entfernt; wer auf diesen PS5s spielt, wird getrennt."
+  },
+  {
+   "zh": "Başka bir PSN hesabı",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Başka bir PSN hesabı",
+   "en": "Another PSN account",
+   "de": "Weiteres PSN-Konto"
+  },
+  {
+   "zh": "En fazla %1 PSN hesabı",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "En fazla %1 PSN hesabı",
+   "en": "At most %1 PSN accounts",
+   "de": "Höchstens %1 PSN-Konten"
+  },
+  {
+   "zh": "Başka bir PSN hesabıyla giriş yap; o hesabın PS5'leri de buraya gelir.",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Başka bir PSN hesabıyla giriş yap; o hesabın PS5'leri de buraya gelir.",
+   "en": "Sign in with another PSN account; its PS5s show up here too.",
+   "de": "Melde dich mit einem weiteren PSN-Konto an; dessen PS5s erscheinen dann auch hier."
+  },
+  {
+   "zh": "PSN hesabı ekle",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "PSN hesabı ekle",
+   "en": "Add PSN account",
+   "de": "PSN-Konto hinzufügen"
+  },
+  {
+   "zh": "PSN: %1",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "PSN: %1",
+   "en": "PSN: %1",
+   "de": "PSN: %1"
+  },
+  {
+   "zh": "Eklemek istediğin PSN hesabıyla giriş yap; bağlı hesapların yerinde kalır. Zaten bağlı bir hesapla girersen yalnız girişi yenilenir.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Eklemek istediğin PSN hesabıyla giriş yap; bağlı hesapların yerinde kalır. Zaten bağlı bir hesapla girersen yalnız girişi yenilenir.",
+   "en": "Sign in with the PSN account you want to add; your linked accounts stay. If you sign in with an account that is already linked, only its sign-in is renewed.",
+   "de": "Melde dich mit dem PSN-Konto an, das du hinzufügen willst; deine verknüpften Konten bleiben. Meldest du dich mit einem bereits verknüpften Konto an, wird nur dessen Anmeldung erneuert."
+  },
+  {
+   "zh": "Bağlı PSN hesapların",
+   "src": "qml/Oviora/OvioraPairDialog.qml",
+   "tr": "Bağlı PSN hesapların",
+   "en": "Your linked PSN accounts",
+   "de": "Deine verknüpften PSN-Konten"
+  },
+  {
+   "zh": "Bu PSN hesabı zaten bağlıydı; girişi yenilendi.",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Bu PSN hesabı zaten bağlıydı; girişi yenilendi.",
+   "en": "This PSN account was already linked; its sign-in was renewed.",
+   "de": "Dieses PSN-Konto war bereits verknüpft; seine Anmeldung wurde erneuert."
+  },
+  {
+   "zh": "%1 kişi",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 kişi",
+   "en": "Members: %1",
+   "de": "Mitglieder: %1"
+  },
+  {
+   "zh": "%1 kişi oynuyor",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 kişi oynuyor",
+   "en": "%1 playing",
+   "de": "%1 im Spiel"
+  },
+  {
+   "zh": "Üyeler",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Üyeler",
+   "en": "Members",
+   "de": "Mitglieder"
+  },
+  {
+   "zh": "Uçtan uca şifreli: mesajları yalnız grubun üyeleri okuyabilir, Oviora sunucusu bile göremez.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Uçtan uca şifreli: mesajları yalnız grubun üyeleri okuyabilir, Oviora sunucusu bile göremez.",
+   "en": "End-to-end encrypted: only the group's members can read the messages; not even the Oviora server can see them.",
+   "de": "Ende-zu-Ende-verschlüsselt: Nur die Mitglieder der Gruppe können die Nachrichten lesen, nicht einmal der Oviora-Server sieht sie."
+  },
+  {
+   "zh": "Grupta %1 için güvenlik anahtarı değişti. Yeni bir cihaz kurmuş olabilir; emin olmak için güvenlik kodunu onunla birebir sohbetinizde karşılaştır.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Grupta %1 için güvenlik anahtarı değişti. Yeni bir cihaz kurmuş olabilir; emin olmak için güvenlik kodunu onunla birebir sohbetinizde karşılaştır.",
+   "en": "In this group, the security key of %1 changed. They may have set up a new device; to be sure, compare the safety code with them in your one-to-one chat.",
+   "de": "In dieser Gruppe hat sich der Sicherheitsschlüssel von %1 geändert. Vielleicht wurde ein neues Gerät eingerichtet; vergleicht zur Sicherheit den Sicherheitscode in eurem Einzelchat."
+  },
+  {
+   "zh": "Grubu sen yönetiyorsun",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Grubu sen yönetiyorsun",
+   "en": "You manage this group",
+   "de": "Du verwaltest diese Gruppe"
+  },
+  {
+   "zh": "Yönetici: %1",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Yönetici: %1",
+   "en": "Managed by %1",
+   "de": "Verwaltet von %1"
+  },
+  {
+   "zh": "%1/%2 kişi",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1/%2 kişi",
+   "en": "%1/%2 members",
+   "de": "%1/%2 Mitglieder"
+  },
+  {
+   "zh": "Yeniden adlandır",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Yeniden adlandır",
+   "en": "Rename",
+   "de": "Umbenennen"
+  },
+  {
+   "zh": "Üye ekle",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Üye ekle",
+   "en": "Add member",
+   "de": "Mitglied hinzufügen"
+  },
+  {
+   "zh": "Grubun adı",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Grubun adı",
+   "en": "Group name",
+   "de": "Name der Gruppe"
+  },
+  {
+   "zh": "Eklenecek arkadaş",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Eklenecek arkadaş",
+   "en": "Friend to add",
+   "de": "Freund hinzufügen"
+  },
+  {
+   "zh": "Bitti",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Bitti",
+   "en": "Done",
+   "de": "Fertig"
+  },
+  {
+   "zh": "Bütün arkadaşların zaten bu grupta.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Bütün arkadaşların zaten bu grupta.",
+   "en": "All your friends are in this group already.",
+   "de": "Alle deine Freunde sind schon in dieser Gruppe."
+  },
+  {
+   "zh": "%1 (sen)",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 (sen)",
+   "en": "%1 (you)",
+   "de": "%1 (du)"
+  },
+  {
+   "zh": "yönetici",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "yönetici",
+   "en": "manager",
+   "de": "Verwalter"
+  },
+  {
+   "zh": "Gruptan çıkar",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Gruptan çıkar",
+   "en": "Remove from group",
+   "de": "Aus der Gruppe entfernen"
+  },
+  {
+   "zh": "%1, %2 grubundan çıkarılsın mı?",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1, %2 grubundan çıkarılsın mı?",
+   "en": "Remove %1 from the group %2?",
+   "de": "%1 aus der Gruppe %2 entfernen?"
+  },
+  {
+   "zh": "Grubu sil",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Grubu sil",
+   "en": "Delete group",
+   "de": "Gruppe löschen"
+  },
+  {
+   "zh": "%1 grubu herkes için silinsin mi? Gruba gönderilen ve henüz alınmamış mesajlar da silinir.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 grubu herkes için silinsin mi? Gruba gönderilen ve henüz alınmamış mesajlar da silinir.",
+   "en": "Delete the group %1 for everyone? Group messages not yet received are deleted too.",
+   "de": "Die Gruppe %1 für alle löschen? Noch nicht abgeholte Gruppennachrichten werden ebenfalls gelöscht."
+  },
+  {
+   "zh": "Gruptan ayrıl",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Gruptan ayrıl",
+   "en": "Leave group",
+   "de": "Gruppe verlassen"
+  },
+  {
+   "zh": "%1 grubundan ayrılmak istiyor musun? Yönetim, gruba en önce katılmış üyeye geçer.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 grubundan ayrılmak istiyor musun? Yönetim, gruba en önce katılmış üyeye geçer.",
+   "en": "Leave the group %1? The member who joined first becomes its manager.",
+   "de": "Die Gruppe %1 verlassen? Das Mitglied, das zuerst beigetreten ist, übernimmt die Verwaltung."
+  },
+  {
+   "zh": "%1 grubundan ayrılmak istiyor musun? Grubun mesajları artık sana gelmez.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 grubundan ayrılmak istiyor musun? Grubun mesajları artık sana gelmez.",
+   "en": "Leave the group %1? You will no longer get its messages.",
+   "de": "Die Gruppe %1 verlassen? Du bekommst ihre Nachrichten dann nicht mehr."
+  },
+  {
+   "zh": "Grup kur",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Grup kur",
+   "en": "New group",
+   "de": "Neue Gruppe"
+  },
+  {
+   "zh": "Gruba bir ad ver ve eklemek istediğin arkadaşlarını seç. Grubu sen yönetirsin; sonradan da üye ekleyebilirsin.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Gruba bir ad ver ve eklemek istediğin arkadaşlarını seç. Grubu sen yönetirsin; sonradan da üye ekleyebilirsin.",
+   "en": "Name the group and pick the friends to add. You manage the group and can add members later too.",
+   "de": "Gib der Gruppe einen Namen und wähle die Freunde aus, die dazugehören. Du verwaltest die Gruppe und kannst später weitere Mitglieder hinzufügen."
+  },
+  {
+   "zh": "Henüz arkadaşın yok. Grubu yalnız kurup arkadaş ekledikçe onları da ekleyebilirsin.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Henüz arkadaşın yok. Grubu yalnız kurup arkadaş ekledikçe onları da ekleyebilirsin.",
+   "en": "You have no friends yet. You can set up the group alone and add friends as you make them.",
+   "de": "Du hast noch keine Freunde. Du kannst die Gruppe allein gründen und Freunde später hinzufügen."
+  },
+  {
+   "zh": "Bir grupta en çok %1 kişi olabilir (sen dahil).",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Bir grupta en çok %1 kişi olabilir (sen dahil).",
+   "en": "A group can have at most %1 people (you included).",
+   "de": "Eine Gruppe kann höchstens %1 Personen haben (du eingeschlossen)."
+  },
+  {
+   "zh": "%1 arkadaş seçildi",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 arkadaş seçildi",
+   "en": "Friends picked: %1",
+   "de": "Ausgewählte Freunde: %1"
+  },
+  {
+   "zh": "Kur",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Kur",
+   "en": "Create",
+   "de": "Gründen"
+  },
+  {
+   "zh": "Gruplar",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Gruplar",
+   "en": "Groups",
+   "de": "Gruppen"
+  },
+  {
+   "zh": "Arkadaşlarınla bir grup kur; grupta herkes uçtan uca şifreli olarak birlikte yazışır. Grubu kuran kişi yönetir, herkes istediğinde ayrılabilir.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Arkadaşlarınla bir grup kur; grupta herkes uçtan uca şifreli olarak birlikte yazışır. Grubu kuran kişi yönetir, herkes istediğinde ayrılabilir.",
+   "en": "Set up a group with your friends; everyone in it chats together, end-to-end encrypted. The person who sets it up manages it, and anyone can leave at any time.",
+   "de": "Gründe mit deinen Freunden eine Gruppe; alle darin schreiben gemeinsam, Ende-zu-Ende-verschlüsselt. Wer sie gründet, verwaltet sie, und jeder kann sie jederzeit verlassen."
+  },
+  {
+   "zh": "Henüz bir grubun yok.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Henüz bir grubun yok.",
+   "en": "You are not in any group yet.",
+   "de": "Du bist noch in keiner Gruppe."
+  },
+  {
+   "zh": "Kendi PS5'inde oynuyor",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Kendi PS5'inde oynuyor",
+   "en": "Playing on their own PS5",
+   "de": "Spielt auf der eigenen PS5"
+  },
+  {
+   "zh": "Kendi PS5'inde oynuyor: %1",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Kendi PS5'inde oynuyor: %1",
+   "en": "Playing %1 on their own PS5",
+   "de": "Spielt %1 auf der eigenen PS5"
+  },
+  {
+   "zh": "Oynuyor",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Oynuyor",
+   "en": "Playing",
+   "de": "Spielt"
+  },
+  {
+   "zh": "Oynuyor: %1",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Oynuyor: %1",
+   "en": "Playing %1",
+   "de": "Spielt %1"
+  },
+  {
+   "zh": "Çevrimiçi",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Çevrimiçi",
+   "en": "Online",
+   "de": "Online"
+  },
+  {
+   "zh": "Çevrimdışı",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Çevrimdışı",
+   "en": "Offline",
+   "de": "Offline"
+  },
+  {
+   "zh": "az önce",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "az önce",
+   "en": "just now",
+   "de": "gerade eben"
+  },
+  {
+   "zh": "%1 dk önce",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "%1 dk önce",
+   "en": "%1 min ago",
+   "de": "vor %1 Min."
+  },
+  {
+   "zh": "%1 sa önce",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "%1 sa önce",
+   "en": "%1 h ago",
+   "de": "vor %1 Std."
+  },
+  {
+   "zh": "%1 gün önce",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "%1 gün önce",
+   "en": "%1 d ago",
+   "de": "vor %1 T."
+  },
+  {
+   "zh": "Grup kurulamadı",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Grup kurulamadı",
+   "en": "Could not create the group",
+   "de": "Gruppe konnte nicht gegründet werden"
+  },
+  {
+   "zh": "Grubun adı değiştirilemedi",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Grubun adı değiştirilemedi",
+   "en": "Could not rename the group",
+   "de": "Gruppe konnte nicht umbenannt werden"
+  },
+  {
+   "zh": "Gruba eklenemedi",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Gruba eklenemedi",
+   "en": "Could not add to the group",
+   "de": "Konnte nicht zur Gruppe hinzugefügt werden"
+  },
+  {
+   "zh": "Gruptan ayrılınamadı",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Gruptan ayrılınamadı",
+   "en": "Could not leave the group",
+   "de": "Gruppe konnte nicht verlassen werden"
+  },
+  {
+   "zh": "Gruptan çıkarılamadı",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Gruptan çıkarılamadı",
+   "en": "Could not remove from the group",
+   "de": "Konnte nicht aus der Gruppe entfernt werden"
+  },
+  {
+   "zh": "Grup silinemedi",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Grup silinemedi",
+   "en": "Could not delete the group",
+   "de": "Gruppe konnte nicht gelöscht werden"
+  },
+  {
+   "zh": "Yeni grup",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Yeni grup",
+   "en": "New group",
+   "de": "Neue Gruppe"
+  },
+  {
+   "zh": "%1 seni %2 grubuna ekledi.",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "%1 seni %2 grubuna ekledi.",
+   "en": "%1 added you to the group %2.",
+   "de": "%1 hat dich zur Gruppe %2 hinzugefügt."
+  },
+  {
+   "zh": "Grupta senden başka kimse yok.",
+   "src": "src/platform/MessageCenter.cpp",
+   "tr": "Grupta senden başka kimse yok.",
+   "en": "There is no one in the group but you.",
+   "de": "Außer dir ist niemand in der Gruppe."
+  },
+  {
+   "zh": "Gruptakilerin hiçbiri henüz mesajlaşmayı açmamış.",
+   "src": "src/platform/MessageCenter.cpp",
+   "tr": "Gruptakilerin hiçbiri henüz mesajlaşmayı açmamış.",
+   "en": "No one in the group has messaging set up yet.",
+   "de": "Noch niemand in der Gruppe hat Nachrichten eingerichtet."
+  },
+  {
+   "zh": "PS5'ini paylaş",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "PS5'ini paylaş",
+   "en": "Share your PS5",
+   "de": "PS5 teilen"
+  },
+  {
+   "zh": "%1, %2 konsoluna internet üzerinden bağlanıp oynayabilecek; o oynarken sen bağlanamazsın. Paylaşmak istediğine emin misin?",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1, %2 konsoluna internet üzerinden bağlanıp oynayabilecek; o oynarken sen bağlanamazsın. Paylaşmak istediğine emin misin?",
+   "en": "%1 will be able to connect to %2 over the internet and play; while they play, you can't connect. Are you sure you want to share it?",
+   "de": "%1 kann sich über das Internet mit %2 verbinden und spielen; solange %1 spielt, kannst du dich nicht verbinden. Möchtest du sie wirklich teilen?"
+  },
+  {
+   "zh": "Evet (%1)",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Evet (%1)",
+   "en": "Yes (%1)",
+   "de": "Ja (%1)"
+  },
+  {
+   "zh": "Adını değiştir",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Adını değiştir",
+   "en": "Rename",
+   "de": "Umbenennen"
+  },
+  {
+   "zh": "Konsolun adı",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Konsolun adı",
+   "en": "Console name",
+   "de": "Name der Konsole"
+  },
+  {
+   "zh": "PS5'in adı",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "PS5'in adı",
+   "en": "PS5 name",
+   "de": "Name der PS5"
+  },
+  {
+   "zh": "Boş bırakırsan PSN'deki adı geri gelir.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Boş bırakırsan PSN'deki adı geri gelir.",
+   "en": "Leave it empty to bring back its name on PSN.",
+   "de": "Leer lassen, um den Namen aus dem PSN wiederherzustellen."
+  },
+  {
+   "zh": "Konsolun adı değiştirilemedi",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Konsolun adı değiştirilemedi",
+   "en": "Could not rename the console",
+   "de": "Die Konsole konnte nicht umbenannt werden"
+  },
+  {
+   "zh": "PS5 paylaşılmıyor",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "PS5 paylaşılmıyor",
+   "en": "No PS5 shared",
+   "de": "Keine PS5 geteilt"
+  },
+  {
+   "zh": "Paylaşılan: %1",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Paylaşılan: %1",
+   "en": "Shared: %1",
+   "de": "Geteilt: %1"
+  },
+  {
+   "zh": "%1 PS5 paylaşılıyor",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 PS5 paylaşılıyor",
+   "en": "%1 PS5s shared",
+   "de": "%1 PS5 geteilt"
+  },
+  {
+   "zh": "PS5 paylaş",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "PS5 paylaş",
+   "en": "Share PS5",
+   "de": "PS5 teilen"
+  },
+  {
+   "zh": "%1 ile paylaş",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 ile paylaş",
+   "en": "Share with %1",
+   "de": "Mit %1 teilen"
+  },
+  {
+   "zh": "PS5 ara",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "PS5 ara",
+   "en": "Search PS5s",
+   "de": "PS5 suchen"
+  },
+  {
+   "zh": "Bu adda bir PS5 yok.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Bu adda bir PS5 yok.",
+   "en": "No PS5 with that name.",
+   "de": "Keine PS5 mit diesem Namen."
+  },
+  {
+   "zh": "%1 PSN hesabı",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 PSN hesabı",
+   "en": "%1 PSN accounts",
+   "de": "%1 PSN-Konten"
+  },
+  {
+   "zh": "Şu an otomatik: internet için %1 Mbps. Çözünürlüğü değiştirince yeniden otomatiğe döner.",
+   "src": "qml/Oviora/ayar/StreamPage.qml",
+   "tr": "Şu an otomatik: internet için %1 Mbps. Çözünürlüğü değiştirince yeniden otomatiğe döner.",
+   "en": "Currently automatic: %1 Mbps for the internet. Changing the resolution switches back to automatic.",
+   "de": "Derzeit automatisch: %1 Mbit/s fürs Internet. Beim Ändern der Auflösung wird wieder automatisch gewählt."
+  },
+  {
+   "zh": "Değiştirmedikçe internet yayınında açık, ev ağında kapalı. Bir sonraki yayında geçerli olur.",
+   "src": "qml/Oviora/ayar/StreamPage.qml",
+   "tr": "Değiştirmedikçe internet yayınında açık, ev ağında kapalı. Bir sonraki yayında geçerli olur.",
+   "en": "Unless you change it: on for internet streams, off on the home network. Takes effect from the next stream.",
+   "de": "Sofern du es nicht änderst: bei Internet-Streams an, im Heimnetz aus. Gilt ab dem nächsten Stream."
+  },
+  {
+   "zh": "Akıcılık tamponu",
+   "src": "qml/Oviora/ayar/StreamPage.qml",
+   "tr": "Akıcılık tamponu",
+   "en": "Smoothness buffer",
+   "de": "Glättungspuffer"
+  },
+  {
+   "zh": "İnternet yayınında görüntüyü 1-2 kare bekletip eşit aralıkla gösterir; uzak ve dalgalı bağlantıda takılmayı azaltır. Ev ağında kullanılmaz.",
+   "src": "qml/Oviora/ayar/StreamPage.qml",
+   "tr": "İnternet yayınında görüntüyü 1-2 kare bekletip eşit aralıkla gösterir; uzak ve dalgalı bağlantıda takılmayı azaltır. Ev ağında kullanılmaz.",
+   "en": "On internet streams, holds the picture for 1-2 frames and shows frames at even intervals; reduces stutter on distant, unsteady connections. Not used on the home network.",
+   "de": "Hält bei Internet-Streams das Bild 1-2 Frames zurück und zeigt die Frames in gleichmäßigen Abständen; verringert Ruckler bei weit entfernten, schwankenden Verbindungen. Im Heimnetz nicht verwendet."
+  },
+  {
+   "zh": "Tampon",
+   "src": "qml/Oviora/ayar/StreamPage.qml",
+   "tr": "Tampon",
+   "en": "Buffer",
+   "de": "Puffer"
+  },
+  {
+   "zh": "Otomatik: hat sakinken 1 kare, dalgalanınca 2 kare bekler. Kapalı: her kare geldiği an gösterilir.",
+   "src": "qml/Oviora/ayar/StreamPage.qml",
+   "tr": "Otomatik: hat sakinken 1 kare, dalgalanınca 2 kare bekler. Kapalı: her kare geldiği an gösterilir.",
+   "en": "Automatic: waits 1 frame while the line is steady, 2 frames when it fluctuates. Off: every frame is shown as soon as it arrives.",
+   "de": "Automatisch: wartet 1 Frame bei ruhiger Leitung, 2 Frames bei Schwankungen. Aus: Jeder Frame wird sofort bei Ankunft angezeigt."
+  },
+  {
+   "zh": "Bağlantıda kayıp var (%1). PS5'i kabloyla bağlamak yardımcı olur.",
+   "src": "qml/Oviora/Main.qml",
+   "tr": "Bağlantıda kayıp var (%1). PS5'i kabloyla bağlamak yardımcı olur.",
+   "en": "The connection is losing packets (%1). Connecting the PS5 by cable helps.",
+   "de": "Die Verbindung verliert Pakete (%1). Die PS5 per Kabel anzuschließen hilft."
+  },
+  {
+   "zh": "30 fps'yi 60'a çıkarmak için Kare üretimi'ni aç (Ctrl+O › Görüntü ayarları)",
+   "src": "qml/Oviora/Main.qml",
+   "tr": "30 fps'yi 60'a çıkarmak için Kare üretimi'ni aç (Ctrl+O › Görüntü ayarları)",
+   "en": "To raise 30 fps to 60, turn on Frame Gen (Ctrl+O › Video settings)",
+   "de": "Um 30 fps auf 60 zu erhöhen, Frame Gen einschalten (Strg+O › Videoeinstellungen)"
+  },
+  {
+   "zh": "Oyun bilgisi açılamadı",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Oyun bilgisi açılamadı",
+   "en": "Couldn't turn on game info",
+   "de": "Spielinfo konnte nicht aktiviert werden"
+  },
+  {
+   "zh": "%1 hesabıyla Sony'ye giriş yap; giriş bitince oyun bilgisi kendiliğinden açılır. Başka bir hesapla girersen açılmaz.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "%1 hesabıyla Sony'ye giriş yap; giriş bitince oyun bilgisi kendiliğinden açılır. Başka bir hesapla girersen açılmaz.",
+   "en": "Sign in to Sony with the %1 account; game info turns on by itself when the sign-in is done. It won't if you sign in with another account.",
+   "de": "Melde dich mit dem Konto %1 bei Sony an; danach wird die Spielinfo von selbst aktiviert. Mit einem anderen Konto klappt es nicht."
+  },
+  {
+   "zh": "Oyun bilgisi açık",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Oyun bilgisi açık",
+   "en": "Game info on",
+   "de": "Spielinfo an"
+  },
+  {
+   "zh": "Oyun bilgisi için yeniden giriş gerekli",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Oyun bilgisi için yeniden giriş gerekli",
+   "en": "Game info needs a new sign-in",
+   "de": "Spielinfo braucht eine neue Anmeldung"
+  },
+  {
+   "zh": "Yeniden giriş",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Yeniden giriş",
+   "en": "Sign in again",
+   "de": "Neu anmelden"
+  },
+  {
+   "zh": "Oyun bilgisini aç",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Oyun bilgisini aç",
+   "en": "Turn on game info",
+   "de": "Spielinfo aktivieren"
+  },
+  {
+   "zh": "Arkadaşların PS5'te ne oynadığını görsün diye Oviora, Sony'ye bu PSN hesabıyla giriş yapar ve çevrimiçi durumunu okur. Giriş bilgin sunucuda güçlü şifrelemeyle saklanır ve yalnız bunun için kullanılır. İstediğin zaman kapatabilirsin.",
+   "src": "qml/Oviora/ayar/AccountPage.qml",
+   "tr": "Arkadaşların PS5'te ne oynadığını görsün diye Oviora, Sony'ye bu PSN hesabıyla giriş yapar ve çevrimiçi durumunu okur. Giriş bilgin sunucuda güçlü şifrelemeyle saklanır ve yalnız bunun için kullanılır. İstediğin zaman kapatabilirsin.",
+   "en": "So your friends can see what you're playing on PS5, Oviora signs in to Sony with this PSN account and reads its online status. Your sign-in is kept on the server with strong encryption and used only for this. You can turn it off at any time.",
+   "de": "Damit deine Freunde sehen, was du auf der PS5 spielst, meldet sich Oviora mit diesem PSN-Konto bei Sony an und liest den Online-Status. Deine Anmeldung wird auf dem Server stark verschlüsselt gespeichert und nur dafür verwendet. Du kannst es jederzeit ausschalten."
+  },
+  {
+   "zh": "Sony girişi okunamadı. Yeniden dene.",
+   "src": "src/platform/PsnWebView.cpp",
+   "tr": "Sony girişi okunamadı. Yeniden dene.",
+   "en": "Couldn't read the Sony sign-in. Try again.",
+   "de": "Die Sony-Anmeldung konnte nicht gelesen werden. Versuch es noch einmal."
+  },
+  {
+   "zh": "Oyun bilgisi açıldı",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Oyun bilgisi açıldı",
+   "en": "Game info is on",
+   "de": "Spielinfo ist aktiviert"
+  },
+  {
+   "zh": "Oyun bilgisi kapatılamadı",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Oyun bilgisi kapatılamadı",
+   "en": "Couldn't turn off game info",
+   "de": "Spielinfo konnte nicht deaktiviert werden"
+  },
+  {
+   "zh": "Oyun bilgisini de aç",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Oyun bilgisini de aç",
+   "en": "Also turn on game info",
+   "de": "Spielinfo auch aktivieren"
+  },
+  {
+   "zh": "Arkadaşların PS5'te ne oynadığını görür. Giriş bilgin sunucuda güçlü şifrelemeyle saklanır; istediğin zaman Ayarlar > Hesap'tan kapatabilirsin.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Arkadaşların PS5'te ne oynadığını görür. Giriş bilgin sunucuda güçlü şifrelemeyle saklanır; istediğin zaman Ayarlar > Hesap'tan kapatabilirsin.",
+   "en": "Your friends see what you're playing on PS5. Your sign-in is kept on the server with strong encryption; you can turn it off at any time in Settings > Account.",
+   "de": "Deine Freunde sehen, was du auf der PS5 spielst. Deine Anmeldung wird auf dem Server stark verschlüsselt gespeichert; du kannst es jederzeit unter Einstellungen > Konto ausschalten."
+  },
+  {
+   "zh": "PSN bağlandı; oyun bilgisi açılamadı, Ayarlar > Hesap'tan tekrar deneyebilirsin.",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "PSN bağlandı; oyun bilgisi açılamadı, Ayarlar > Hesap'tan tekrar deneyebilirsin.",
+   "en": "PSN is linked, but game info couldn't be turned on. You can try again in Settings > Account.",
+   "de": "PSN ist verbunden, aber die Spielinfo konnte nicht aktiviert werden. Du kannst es unter Einstellungen > Konto noch einmal versuchen."
+  },
+  {
+   "zh": "%1 · Oviora ile",
+   "src": "src/platform/DiscordPresence.cpp",
+   "tr": "%1 · Oviora ile",
+   "en": "%1 · via Oviora",
+   "de": "%1 · über Oviora"
+  },
+  {
+   "zh": "Oviora'yı indir",
+   "src": "src/platform/DiscordPresence.cpp",
+   "tr": "Oviora'yı indir",
+   "en": "Get Oviora",
+   "de": "Oviora holen"
+  },
+  {
+   "zh": "Cevaplamak için Ctrl+Enter",
+   "src": "qml/Oviora/Main.qml",
+   "tr": "Cevaplamak için Ctrl+Enter",
+   "en": "Ctrl+Enter to reply",
+   "de": "Strg+Eingabe zum Antworten"
+  },
+  {
+   "zh": "Oyuna dön",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Oyuna dön",
+   "en": "Back to game",
+   "de": "Zurück zum Spiel"
+  },
+  {
+   "zh": "Telefonda göster",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Telefonda göster",
+   "en": "Show on phone",
+   "de": "Auf dem Handy zeigen"
+  },
+  {
+   "zh": "Telefonda altyazı",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Telefonda altyazı",
+   "en": "Subtitles on phone",
+   "de": "Untertitel auf dem Handy"
+  },
+  {
+   "zh": "Telefonunun kamerasıyla kodu okut; açılan sayfada Türkçe altyazı büyük yazıyla, ekrandakiyle aynı anda görünür. Telefon ile bu bilgisayar aynı ev ağında olmalı.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Telefonunun kamerasıyla kodu okut; açılan sayfada Türkçe altyazı büyük yazıyla, ekrandakiyle aynı anda görünür. Telefon ile bu bilgisayar aynı ev ağında olmalı.",
+   "en": "Scan the code with your phone's camera; the page that opens shows the translated subtitle in large type, at the same moment as on screen. The phone and this computer must be on the same home network.",
+   "de": "Scanne den Code mit der Handykamera; die Seite zeigt den übersetzten Untertitel groß an, gleichzeitig mit dem Bildschirm. Handy und dieser Computer müssen im selben Heimnetz sein."
+  },
+  {
+   "zh": "%1 telefon bağlı",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "%1 telefon bağlı",
+   "en": "%1 phone(s) connected",
+   "de": "%1 Handy(s) verbunden"
+  },
+  {
+   "zh": "Windows izin sorarsa \"İzin ver\" de. Telefonun ekranı kararıyorsa sayfadaki \"Başlat\"a bas ya da ekran zaman aşımını uzat.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Windows izin sorarsa \"İzin ver\" de. Telefonun ekranı kararıyorsa sayfadaki \"Başlat\"a bas ya da ekran zaman aşımını uzat.",
+   "en": "If Windows asks, choose \"Allow\". If the phone's screen goes dark, tap \"Start\" on the page or lengthen the screen timeout.",
+   "de": "Wenn Windows fragt, wähle \"Zulassen\". Wird das Handydisplay dunkel, tippe auf der Seite auf \"Starten\" oder verlängere die Bildschirmzeit."
+  },
+  {
+   "zh": "Paylaşımı kapat",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Paylaşımı kapat",
+   "en": "Stop sharing",
+   "de": "Freigabe beenden"
+  },
+  {
+   "zh": "Paylaşımı aç",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Paylaşımı aç",
+   "en": "Start sharing",
+   "de": "Freigabe starten"
+  },
+  {
+   "zh": "Bağlantı noktası açılamadı.",
+   "src": "src/platform/SubtitleScreen.cpp",
+   "tr": "Bağlantı noktası açılamadı.",
+   "en": "Couldn't open a port.",
+   "de": "Port konnte nicht geöffnet werden."
+  },
+  {
+   "zh": "Bu bilgisayar bir ev ağına bağlı görünmüyor.",
+   "src": "src/platform/SubtitleScreen.cpp",
+   "tr": "Bu bilgisayar bir ev ağına bağlı görünmüyor.",
+   "en": "This computer doesn't seem to be on a home network.",
+   "de": "Dieser Computer scheint mit keinem Heimnetz verbunden zu sein."
+  },
+  {
+   "zh": "Altyazı bekleniyor…",
+   "src": "src/platform/SubtitleScreen.cpp",
+   "tr": "Altyazı bekleniyor…",
+   "en": "Waiting for subtitles…",
+   "de": "Warte auf Untertitel…"
+  },
+  {
+   "zh": "Başlat",
+   "src": "src/platform/SubtitleScreen.cpp",
+   "tr": "Başlat",
+   "en": "Start",
+   "de": "Starten"
+  },
+  {
+   "zh": "Telefondaki Oviora uygulamasında Altyazı ekranı'nı aç: bu bilgisayarı kendisi bulur, aşağıdaki kodu bir kez gir. Uygulaması olmayan bir telefonda QR kodu kamerayla okut. Telefon ile bu bilgisayar aynı ev ağında olmalı.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Telefondaki Oviora uygulamasında Altyazı ekranı'nı aç: bu bilgisayarı kendisi bulur, aşağıdaki kodu bir kez gir. Uygulaması olmayan bir telefonda QR kodu kamerayla okut. Telefon ile bu bilgisayar aynı ev ağında olmalı.",
+   "en": "Open Subtitle screen in the Oviora app on your phone: it finds this computer by itself; enter the code below once. On a phone without the app, scan the QR code with the camera. The phone and this computer must be on the same home network.",
+   "de": "Öffne den Untertitelbildschirm in der Oviora-App auf dem Handy: Sie findet diesen Computer selbst; gib den Code unten einmal ein. Auf einem Handy ohne App scanne den QR-Code mit der Kamera. Handy und Computer müssen im selben Heimnetz sein."
+  },
+  {
+   "zh": "Eşleştirme kodu",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Eşleştirme kodu",
+   "en": "Pairing code",
+   "de": "Kopplungscode"
+  },
+  {
+   "zh": "Ekranın ne kadar sık okunacağı. Daha kısa süre daha çabuk tepki verir ama işlemciyi yorar. Varsayılan 150 ms.",
+   "src": "qml/Oviora/ayar/SubtitlePage.qml",
+   "tr": "Ekranın ne kadar sık okunacağı. Daha kısa süre daha çabuk tepki verir ama işlemciyi yorar. Varsayılan 150 ms.",
+   "en": "How often the screen is read. A shorter time reacts faster but loads the processor more. Default 150 ms.",
+   "de": "Wie oft der Bildschirm gelesen wird. Eine kürzere Zeit reagiert schneller, belastet aber den Prozessor. Standard 150 ms."
+  },
+  {
+   "zh": "İzlet",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "İzlet",
+   "en": "Watch party",
+   "de": "Zuschauen lassen"
+  },
+  {
+   "zh": "Yayında · %1",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Yayında · %1",
+   "en": "Live · %1",
+   "de": "Live · %1"
+  },
+  {
+   "zh": "Açılıyor",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Açılıyor",
+   "en": "Starting",
+   "de": "Startet"
+  },
+  {
+   "zh": "Oynadığını arkadaşların ve grup üyelerin tarayıcıdan canlı izlesin. Görüntü bir kez, yeniden sıkıştırılmadan Oviora sunucusuna gider; en çok 20 kişi izleyebilir. Kaydedilmez.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Oynadığını arkadaşların ve grup üyelerin tarayıcıdan canlı izlesin. Görüntü bir kez, yeniden sıkıştırılmadan Oviora sunucusuna gider; en çok 20 kişi izleyebilir. Kaydedilmez.",
+   "en": "Let your friends and group members watch your game live in the browser. The picture goes to the Oviora server once, not re-encoded; up to 20 people can watch. Nothing is recorded.",
+   "de": "Lass deine Freunde und Gruppenmitglieder dein Spiel live im Browser ansehen. Das Bild geht einmal und ohne Neukodierung an den Oviora-Server; bis zu 20 Personen können zuschauen. Nichts wird aufgezeichnet."
+  },
+  {
+   "zh": "Yayında · %1 izleyici",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Yayında · %1 izleyici",
+   "en": "Live · %1 watching",
+   "de": "Live · %1 schauen zu"
+  },
+  {
+   "zh": "Yayında · izleyici bekleniyor",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Yayında · izleyici bekleniyor",
+   "en": "Live · waiting for viewers",
+   "de": "Live · warte auf Zuschauer"
+  },
+  {
+   "zh": "Yayın açılıyor…",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Yayın açılıyor…",
+   "en": "Starting the broadcast…",
+   "de": "Übertragung startet…"
+  },
+  {
+   "zh": "İzleme adresi: %1",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "İzleme adresi: %1",
+   "en": "Watch at: %1",
+   "de": "Zuschauen unter: %1"
+  },
+  {
+   "zh": "Bu yayın H.265: telefonda Safari ve güncel Chrome açar; bazı tarayıcılar (Firefox gibi) açamayabilir. Herkes izleyebilsin istersen PS5 bağlantı ayarlarından H.264'e geç (bir sonraki bağlantıda).",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Bu yayın H.265: telefonda Safari ve güncel Chrome açar; bazı tarayıcılar (Firefox gibi) açamayabilir. Herkes izleyebilsin istersen PS5 bağlantı ayarlarından H.264'e geç (bir sonraki bağlantıda).",
+   "en": "This broadcast is H.265: Safari and current Chrome open it on phones; some browsers (such as Firefox) may not. If you want everyone to be able to watch, switch to H.264 in the PS5 connection settings (takes effect on the next connection).",
+   "de": "Diese Übertragung ist H.265: Safari und aktuelles Chrome öffnen sie auf dem Handy; manche Browser (etwa Firefox) eventuell nicht. Sollen alle zuschauen können, stelle in den PS5-Verbindungseinstellungen auf H.264 um (ab der nächsten Verbindung)."
+  },
+  {
+   "zh": "Bu sürümde İzlet yok.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Bu sürümde İzlet yok.",
+   "en": "Watch party is not available in this version.",
+   "de": "Zuschauen lassen gibt es in dieser Version nicht."
+  },
+  {
+   "zh": "Yayın, PS5'te oynarken açılabilir.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Yayın, PS5'te oynarken açılabilir.",
+   "en": "You can start a broadcast while playing on the PS5.",
+   "de": "Eine Übertragung kannst du starten, während du auf der PS5 spielst."
+  },
+  {
+   "zh": "Arkadaşlarına haber ver",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Arkadaşlarına haber ver",
+   "en": "Tell your friends",
+   "de": "Freunden Bescheid geben"
+  },
+  {
+   "zh": "Yayını kapat",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Yayını kapat",
+   "en": "End broadcast",
+   "de": "Übertragung beenden"
+  },
+  {
+   "zh": "Yayını aç",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Yayını aç",
+   "en": "Start broadcast",
+   "de": "Übertragung starten"
+  },
+  {
+   "zh": "Yayın sunucusuyla bağlantı koptu.",
+   "src": "src/platform/IzletController.cpp",
+   "tr": "Yayın sunucusuyla bağlantı koptu.",
+   "en": "The connection to the broadcast server was lost.",
+   "de": "Die Verbindung zum Übertragungsserver ist abgebrochen."
+  },
+  {
+   "zh": "Yayın başlatılamadı.",
+   "src": "src/platform/IzletController.cpp",
+   "tr": "Yayın başlatılamadı.",
+   "en": "The broadcast could not be started.",
+   "de": "Die Übertragung konnte nicht gestartet werden."
+  },
+  {
+   "zh": "Canlı yayın",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "Canlı yayın",
+   "en": "Live broadcast",
+   "de": "Live-Übertragung"
+  },
+  {
+   "zh": "%1, %2 adlı PS5'inde oynadığını izletiyor: oviora.tr/izle.php",
+   "src": "src/platform/OvioraServer.cpp",
+   "tr": "%1, %2 adlı PS5'inde oynadığını izletiyor: oviora.tr/izle.php",
+   "en": "%1 is streaming their game on %2 for friends: oviora.tr/izle.php",
+   "de": "%1 überträgt das Spiel auf %2 live: oviora.tr/izle.php"
+  },
+  {
+   "zh": "Görüntü yayın sunucusuna ulaşmadı. Sunucuda UDP 50000-50100 açık mı (Windows güvenlik duvarı ve sağlayıcının paneli)?",
+   "src": "src/platform/IzletController.cpp",
+   "tr": "Görüntü yayın sunucusuna ulaşmadı. Sunucuda UDP 50000-50100 açık mı (Windows güvenlik duvarı ve sağlayıcının paneli)?",
+   "en": "The picture did not reach the broadcast server. Is UDP 50000-50100 open on the server (Windows firewall and the provider's panel)?",
+   "de": "Das Bild hat den Übertragungsserver nicht erreicht. Ist UDP 50000-50100 auf dem Server offen (Windows-Firewall und Anbieter-Panel)?"
+  },
+  {
+   "zh": "Canlı yayınlar",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Canlı yayınlar",
+   "en": "Live broadcasts",
+   "de": "Live-Übertragungen"
+  },
+  {
+   "zh": "Listeye dön",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Listeye dön",
+   "en": "Back to the list",
+   "de": "Zurück zur Liste"
+  },
+  {
+   "zh": "● Canlı yayınlar (%1)",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "● Canlı yayınlar (%1)",
+   "en": "● Live broadcasts (%1)",
+   "de": "● Live-Übertragungen (%1)"
+  },
+  {
+   "zh": "İzle",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "İzle",
+   "en": "Watch",
+   "de": "Ansehen"
+  },
+  {
+   "zh": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" uygulamanın içinde açar.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" uygulamanın içinde açar.",
+   "en": "Your friends and group members are streaming their games. \"Watch\" opens it inside the app.",
+   "de": "Deine Freunde und Gruppenmitglieder übertragen ihr Spiel. „Ansehen“ öffnet es in der App."
+  },
+  {
+   "zh": "Bir arkadaşın",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Bir arkadaşın",
+   "en": "A friend",
+   "de": "Ein Freund"
+  },
+  {
+   "zh": "İzleme açılamadı.",
+   "src": "src/platform/IzletController.cpp",
+   "tr": "İzleme açılamadı.",
+   "en": "Watching could not be opened.",
+   "de": "Zuschauen konnte nicht geöffnet werden."
+  },
+  {
+   "zh": "İzleme penceresi açılamadı (0x%1).",
+   "src": "src/platform/IzleView.cpp",
+   "tr": "İzleme penceresi açılamadı (0x%1).",
+   "en": "The watch page could not be opened (0x%1).",
+   "de": "Die Zuschauseite konnte nicht geöffnet werden (0x%1)."
+  },
+  {
+   "zh": "İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor): izleyicilerde görüntü bir an donabilir. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor): izleyicilerde görüntü bir an donabilir. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.",
+   "en": "Your internet upload is not enough for this broadcast (%1 Mbit/s going out, packets lost): viewers' picture may freeze for a moment. Lowering the bitrate in the PS5 connection settings fixes it.",
+   "de": "Dein Upload reicht für diese Übertragung nicht (%1 Mbit/s gehen raus, Pakete gehen verloren): Bei Zuschauern kann das Bild kurz einfrieren. Eine niedrigere Bitrate in den PS5-Verbindungseinstellungen behebt das."
+  },
+  {
+   "zh": "Arkadaşların ve grup üyelerin oynarken \"İzlet\"i açarsa burada görünür. İzlediğin yayın, PS5 oynar gibi bu uygulamanın oynatıcısında açılır.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Arkadaşların ve grup üyelerin oynarken \"İzlet\"i açarsa burada görünür. İzlediğin yayın, PS5 oynar gibi bu uygulamanın oynatıcısında açılır.",
+   "en": "When your friends and group members turn on \"İzlet\" while playing, they show up here. The broadcast you watch opens in this app's player, just like playing a PS5.",
+   "de": "Wenn deine Freunde und Gruppenmitglieder beim Spielen „İzlet“ einschalten, erscheinen sie hier. Die Übertragung öffnet sich im Player dieser App, wie beim Spielen auf der PS5."
+  },
+  {
+   "zh": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" yayını bu uygulamanın oynatıcısında açar.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" yayını bu uygulamanın oynatıcısında açar.",
+   "en": "Your friends and group members are streaming their games. \"Watch\" opens it in this app's player.",
+   "de": "Deine Freunde und Gruppenmitglieder übertragen ihr Spiel. „Ansehen“ öffnet es im Player dieser App."
+  },
+  {
+   "zh": "Şu an açık yayın yok.",
+   "src": "qml/Oviora/OvioraHome.qml",
+   "tr": "Şu an açık yayın yok.",
+   "en": "No broadcasts right now.",
+   "de": "Gerade keine Übertragungen."
+  },
+  {
+   "zh": "İzlemeyi bitir",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "İzlemeyi bitir",
+   "en": "Stop watching",
+   "de": "Zuschauen beenden"
+  },
+  {
+   "zh": "Yayın açılamadı.",
+   "src": "src/platform/IzletController.cpp",
+   "tr": "Yayın açılamadı.",
+   "en": "The broadcast could not be opened.",
+   "de": "Die Übertragung konnte nicht geöffnet werden."
+  },
+  {
+   "zh": "İzleme kapandı.",
+   "src": "src/platform/IzletController.cpp",
+   "tr": "İzleme kapandı.",
+   "en": "Watching ended.",
+   "de": "Zuschauen beendet."
+  },
+  {
+   "zh": "Yayın bitti.",
+   "src": "src/platform/IzletController.cpp",
+   "tr": "Yayın bitti.",
+   "en": "The broadcast has ended.",
+   "de": "Die Übertragung ist beendet."
+  },
+  {
+   "zh": "Canlı Yayın",
+   "src": "src/ui/bridge/RemotePlay.cpp",
+   "tr": "Canlı Yayın",
+   "en": "Live broadcast",
+   "de": "Live-Übertragung"
+  },
+  {
+   "zh": "Yayına bağlanılıyor · %1",
+   "src": "src/ui/bridge/RemotePlay.cpp",
+   "tr": "Yayına bağlanılıyor · %1",
+   "en": "Connecting to the broadcast · %1",
+   "de": "Verbindung zur Übertragung · %1"
+  },
+  {
+   "zh": "Menü solda",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Menü solda",
+   "en": "Menu on the left",
+   "de": "Menü links"
+  },
+  {
+   "zh": "Menü sağda",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Menü sağda",
+   "en": "Menu on the right",
+   "de": "Menü rechts"
+  },
+  {
+   "zh": "Menü konumu",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Menü konumu",
+   "en": "Menu position",
+   "de": "Menüposition"
+  },
+  {
+   "zh": "Menü, oyun ekranının bu kenarından açılır.",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Menü, oyun ekranının bu kenarından açılır.",
+   "en": "The menu opens from this edge of the game picture.",
+   "de": "Das Menü öffnet sich an diesem Rand des Spielbilds."
+  },
+  {
+   "zh": "Bugün",
+   "src": "qml/Oviora/ChatView.qml",
+   "tr": "Bugün",
+   "en": "Today",
+   "de": "Heute"
+  },
+  {
+   "zh": "Dün",
+   "src": "qml/Oviora/ChatView.qml",
+   "tr": "Dün",
+   "en": "Yesterday",
+   "de": "Gestern"
+  },
+  {
+   "zh": "%1 / %2 kişi gördü",
+   "src": "qml/Oviora/ChatView.qml",
+   "tr": "%1 / %2 kişi gördü",
+   "en": "Seen by %1 of %2",
+   "de": "Von %1 / %2 gesehen"
+  },
+  {
+   "zh": "Gönderilemedi · Tekrar dene",
+   "src": "qml/Oviora/ChatView.qml",
+   "tr": "Gönderilemedi · Tekrar dene",
+   "en": "Not sent · Try again",
+   "de": "Nicht gesendet · Erneut versuchen"
+  },
+  {
+   "zh": "%1 yazıyor",
+   "src": "qml/Oviora/ChatView.qml",
+   "tr": "%1 yazıyor",
+   "en": "%1 is typing",
+   "de": "%1 schreibt"
+  },
+  {
+   "zh": "%1 kişi yazıyor",
+   "src": "qml/Oviora/ChatView.qml",
+   "tr": "%1 kişi yazıyor",
+   "en": "%1 people are typing",
+   "de": "%1 Personen schreiben"
+  },
+  {
+   "zh": "Gönder (Enter) · Yeni satır: Shift+Enter",
+   "src": "qml/Oviora/ChatView.qml",
+   "tr": "Gönder (Enter) · Yeni satır: Shift+Enter",
+   "en": "Send (Enter) · New line: Shift+Enter",
+   "de": "Senden (Enter) · Neue Zeile: Umschalt+Enter"
+  },
+  {
+   "zh": "yazıyor…",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "yazıyor…",
+   "en": "typing…",
+   "de": "schreibt…"
+  },
+  {
+   "zh": "Sen: ",
+   "src": "qml/Oviora/StreamMenu.qml",
+   "tr": "Sen: ",
+   "en": "You: ",
+   "de": "Du: "
   }
  ]
 }

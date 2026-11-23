@@ -10,6 +10,7 @@ bool remoteRunning(const engine::PlayerSnapshot& s) { return s.remotePlay && s.r
 
 // --- rest mode ------------------------------------------------------------------------------------
 void QmlPlayerBridge::ps5Rest() {
+    if (impl_->connectionWatching) { ps5Cancel(); return; }
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     const auto s = impl_->engine.snapshot();
     if (!s.remotePlay || !s.running) { ps5Cancel(); return; }
@@ -52,6 +53,15 @@ QVariantMap QmlPlayerBridge::streamStats() const {
     if (!remoteRunning(s)) return {{"active", false}};
     const auto& r = s.remoteStream;
     const double measured = s.remoteMeasuredMbps > 0 ? s.remoteMeasuredMbps : r.videoMbps;
+    // For the stream's one-time frame generation hint (Main.qml): whether this PC can run any
+    // FG and whether the chain holds an FG stage the user turned off.
+    const auto caps = currentEffectCapabilities();
+    static constexpr const char* kFgIds[] = {"dlss", "xess", "fsr3", "fsr4", "vfg"};
+    const bool fgSupported = std::any_of(std::begin(kFgIds), std::end(kFgIds),
+        [&](const char* id) { return caps.value(id).toMap().value("available").toBool(); });
+    bool fgTurnedOff = false;
+    for (uint32_t n = 0; n < impl_->chain.nodeCount; ++n)
+        fgTurnedOff = fgTurnedOff || (impl_->chain.nodes[n].type == engine::EffectType::FrameGeneration && !impl_->chain.nodes[n].enabled);
     return {{"active", true},
             {"width", int(s.sourceWidth ? s.sourceWidth : r.requestedProfile.width)},
             {"height", int(s.sourceHeight ? s.sourceHeight : r.requestedProfile.height)},
@@ -62,7 +72,12 @@ QVariantMap QmlPlayerBridge::streamStats() const {
             {"rttMs", s.remoteRttMs},
             {"framesLost", qulonglong(r.framesLost)},
             {"skipped", qulonglong(s.remotePlaySkipped)},
-            {"linkReady", s.remoteLinkReady}};
+            {"linkReady", s.remoteLinkReady},
+            {"internet", impl_->connectionPsn},
+            {"requestedFps", int(r.requestedProfile.fps)},
+            {"fgOn", s.applied.multiplier > 1},
+            {"fgSupported", fgSupported},
+            {"fgTurnedOff", fgTurnedOff}};
 }
 
 // --- statistics panel over the picture --------------------------------------------------------------
@@ -246,7 +261,7 @@ QStringList QmlPlayerBridge::microphones() const {
     return impl_->micDevices;
 }
 void QmlPlayerBridge::toggleMicrophone() {
-    if (!remoteRunning(impl_->snapshot)) return;
+    if (impl_->connectionWatching || !remoteRunning(impl_->snapshot)) return;
     impl_->micWanted = !impl_->micWanted;
     oviora::log::info("remoteplay-mic", impl_->micWanted ? "turned on from the stream menu" : "turned off from the stream menu");
     emit micChanged();
@@ -256,7 +271,7 @@ void QmlPlayerBridge::tickStreamSession() {
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     auto& i = *impl_;
     const auto& s = i.snapshot;
-    const bool active = remoteRunning(s);
+    const bool active = remoteRunning(s) && !i.connectionWatching;
     // The choice lasts for one stream (a reconnect inside it keeps it); a new stream starts with
     // the microphone as Ses ve ağ says (old: startMicUnmuted, off by default)
     if (i.micSession && (!s.remotePlay || s.sessionId != i.micSession)) {

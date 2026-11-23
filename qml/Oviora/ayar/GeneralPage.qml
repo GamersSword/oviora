@@ -100,7 +100,7 @@ SettingsPage {
         }
     }
 
-    // Streamer mode (preferences.streamerMode); audio/video switch-off stays hidden
+    // Streamer mode (preferences.streamerMode), Discord's "playing" line; audio/video switch-off stays hidden
     SettingsCard {
         title: qsTr("Gizlilik")
         description: qsTr("Ekranını başkalarına gösterirken işine yarar.")
@@ -111,6 +111,15 @@ SettingsPage {
             Toggle {
                 checked: oviora.preferences.streamerMode === true
                 onToggled: oviora.setPreference("streamerMode", checked)
+            }
+        }
+        // preferences.discordPresence, on unless switched off (platform/DiscordPresence.cpp via main.cpp)
+        SettingRow {
+            title: qsTr("Discord'da oynadığını göster")
+            help: qsTr("Yayın sürerken Discord profilinde oyunun adı ve kimin PS5'inde oynadığın görünür.")
+            Toggle {
+                checked: oviora.preferences.discordPresence !== false
+                onToggled: oviora.setPreference("discordPresence", checked)
             }
         }
 

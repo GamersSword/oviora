@@ -284,7 +284,9 @@ if(CHIAKI_ENABLE_TESTS)
 endif()
 
 if(CHIAKI_ENABLE_ANDROID)
-	add_subdirectory(android/app)
+	# Oviora: the Android app lives in the repository's android/ folder (passed by its Gradle build)
+	set(CHIAKI_ANDROID_APP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android/app" CACHE PATH "Android app (Gradle) folder")
+	add_subdirectory("${CHIAKI_ANDROID_APP_DIR}" android-app)
 endif()
 
 if(CHIAKI_ENABLE_BOREALIS)

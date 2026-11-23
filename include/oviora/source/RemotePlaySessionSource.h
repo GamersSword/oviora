@@ -1,5 +1,6 @@
 #pragma once
 #include "RemotePlaySource.h"
+#include "SmoothBuffer.h"
 #include "oviora/sink/CaptureAudioSession.h"
 #include <atomic>
 #include <condition_variable>
@@ -31,6 +32,8 @@ public:
     void gotoBed();
     void microphone(bool on);
     void microphonePcm(std::vector<std::int16_t> block);
+    void setMediaTee(remoteplay::MediaRelayCallbacks tee);
+    void requestIdr();
     // The link as the old Oviora showed it: packet loss averaged over the last ~2 s (0..1),
     // the measured video bitrate, the console's round trip (-1 unknown) and whether the
     // microphone is on at the console.
@@ -60,6 +63,11 @@ private:
     std::atomic<bool> alive_{false};
     bool initialized_=false, started_=false, failed_=false;
     std::optional<Frame> latest_;
+    // Akıcılık tamponu (desc.smoothing): decoded frames wait in held_ and leave on smooth_'s
+    // cadence; off, only the newest one is kept in latest_.
+    bool smoothing_=false;
+    SmoothBuffer smooth_;
+    std::deque<Frame> held_;
     std::shared_ptr<AVFrame> view_;
     SourceInfo info_, publishedInfo_;
     remoteplay::SessionInbox::Snapshot snapshot_;
@@ -71,6 +79,9 @@ private:
     bool bedRequested_=false;
     bool micWanted_=false;
     std::deque<std::vector<std::int16_t>> micBlocks_;
+    remoteplay::MediaRelayCallbacks tee_;
+    bool teeDirty_=false;
+    std::atomic<bool> idrRequested_{false};
     Link link_;
     uint64_t skipped_=0;
     Rates rates_;

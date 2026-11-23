@@ -919,3 +919,19 @@ Upstream collaborator selimsandal explicitly states that third-party redistribut
 |---|---|---|
 | QR Code generator library (C++), Project Nayuki | MIT, Copyright (c) Project Nayuki ([third_party/qrcodegen/qrcodegen.hpp](third_party/qrcodegen/qrcodegen.hpp)) | `qrcodegen.cpp` / `qrcodegen.hpp` draw the invite QR code (`src/platform/OvioraServer.cpp`) |
 | Microsoft Edge WebView2 SDK 1.0.4314.35 (`Microsoft.Web.WebView2` on nuget.org) | BSD-3-Clause, Copyright (C) Microsoft Corporation ([third_party/webview2/LICENSE.txt](third_party/webview2/LICENSE.txt)) | `WebView2.h` and `WebView2EnvironmentOptions.h` for the PSN sign-in window (`src/platform/PsnWebView.cpp`); `WebView2Loader.dll` (x64, signed by Microsoft Corporation) is copied next to the program and loaded at run time |
+
+## WebRTC gateway (`oviora-gecit.exe`, optional `OVIORA_BUILD_GECIT`)
+
+The optional headless WebRTC gateway (`apps/oviora-gecit/`, built only when `OVIORA_BUILD_GECIT=ON`) statically links the following `x64-windows-static` vcpkg packages alongside Qt 6 (`Core`, `Network`) and `chiaki-ng` / OpenSSL / Opus:
+
+| Component | Version | License | Notice file |
+|---|---|---|---|
+| `libdatachannel` (`srtp`, `ws`) | 0.24.6 | MPL-2.0 | [licenses/gecit/libdatachannel-MPL2.txt](licenses/gecit/libdatachannel-MPL2.txt) |
+| `libjuice` (with `ipv4-interrupt.diff` overlay patch) | 1.7.2#1 | MPL-2.0 | [licenses/gecit/libjuice-MPL2.txt](licenses/gecit/libjuice-MPL2.txt) |
+| `libsrtp` | 2.8.1 | BSD-3-Clause | [licenses/gecit/libsrtp-BSD3.txt](licenses/gecit/libsrtp-BSD3.txt) |
+| `usrsctp` | 0.9.5.0#4 | BSD-3-Clause | [licenses/gecit/usrsctp-BSD3.txt](licenses/gecit/usrsctp-BSD3.txt) |
+| `nlohmann-json` | 3.12.0#2 | MIT | [licenses/gecit/nlohmann-json-MIT.txt](licenses/gecit/nlohmann-json-MIT.txt) |
+| `plog` | 1.1.11 | MIT | [licenses/gecit/plog-MIT.txt](licenses/gecit/plog-MIT.txt) |
+
+Local patch: `libjuice` applies `ipv4-interrupt.diff` (`src/conn_poll.c`) so the internal wake-up UDP socket binds `127.0.0.1` instead of `"localhost"` (avoiding ::1 loopback packet drops on Windows adapters where IPv6 loopback stalls ICE checks).
+

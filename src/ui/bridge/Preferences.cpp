@@ -173,13 +173,14 @@ bool QmlPlayerBridge::setPreference(const QString& key, const QVariant& value) {
     // Pencere, Ses ve ag -> Mikrofon and Baglanti, Konsollar -> Otomatik baglan.
     static const QHash<QString, QStringList> streamChoices{{"disconnectAction", {"ask", "sleep", "nothing"}},
                                                           {"suspendAction", {"sleep", "nothing"}},
-                                                          {"streamWindow", {"normal", "maximized", "fullscreen"}}};
+                                                          {"streamWindow", {"normal", "maximized", "fullscreen"}},
+                                                          {"streamMenuSide", {"right", "left"}}};
     static const QHash<QString, std::pair<int, int>> streamRanges{{"weakLinkWarning", {0, 100}}, {"hideCursorSeconds", {1, 10}}};
-    static const QStringList streamFlags{"showStreamStats", "micStartOn", "fullscreenDoubleClick", "hideCursor"};
+    static const QStringList streamFlags{"showStreamStats", "micStartOn", "fullscreenDoubleClick", "hideCursor", "fgHintShown"};
     static const QStringList flags{"subtitleEnabled", "subtitleBackground", "subtitleFit",
                                    "subtitleSecondLanguage", "audioForceStereo", "holdCompare",
                                    "cinePillHidden", "obsGameCapture", "fullscreenMemoryProtection", "hdrFgCompatibility", "computeOnMonitorGpu",
-                                   "streamerMode"};
+                                   "streamerMode", "discordPresence"};
     QVariant stored;
     if (streamChoices.contains(key)) {
         const QString v = value.toString();
@@ -579,6 +580,10 @@ void QmlPlayerBridge::updateLiveCompanionCompat() {
     const bool automatic = impl_->prefString("overlayCompat") != QLatin1String("off");
     const bool running = automatic && !GetEnvironmentVariableW(L"OVIORA_TEST_IGNORE_DOUYIN", nullptr, 0)
                          && gfx::douyinLiveCompanionRunning();
+    applyLiveCompanionCompat(running);
+}
+
+void QmlPlayerBridge::applyLiveCompanionCompat(bool running) {
     if (running == impl_->liveCompanionCap) return;
     impl_->liveCompanionCap = running;
     gfx::setGpuPriorityCap(running ? gfx::GpuPriority::High : gfx::GpuPriority::Realtime);
@@ -670,7 +675,10 @@ QString QmlPlayerBridge::sourceKind() const {
 QString QmlPlayerBridge::sourceTitle() const {
     const QString kind = sourceKind();
     if (kind.isEmpty()) return {};
-    if (kind == QLatin1String("ps5")) return tr("PS5 串流 · %1").arg(impl_->liveLabel);
+    if (kind == QLatin1String("ps5")) {
+        if (impl_->connectionWatching) return impl_->connectionName;
+        return tr("PS5 串流 · %1").arg(impl_->liveLabel);
+    }
     return sourceName();
 }
 // "1080p60" / "1080p59.94": the reported height and nominal rate only.

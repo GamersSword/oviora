@@ -12,6 +12,7 @@
 // pixels in D3D12 (where the latency budget lives).
 #include <QApplication>
 #include <QProcess>
+#include <QThread>
 #include <QIcon>
 #include <QImage>
 #include <QPixmap>
@@ -23,6 +24,7 @@
 #include <QSGRendererInterface>
 #include <QKeyEvent>
 #include <QTimer>
+#include <QDateTime>
 #include <QRegularExpression>
 #include <atomic>
 #include <QPointer>
@@ -39,6 +41,10 @@
 #include <QSysInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QStandardPaths>
 
 #include <windows.h>
@@ -50,17 +56,22 @@
 #pragma comment(lib, "comctl32.lib")
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <format>
 #include <memory>
+#include <thread>
+#include <vector>
+#include <QEvent>
 
 #include "oviora/Log.h"
 #include "oviora/RuntimePaths.h"
 #include "oviora/engine/EngineController.h"
 #include "oviora/engine/PresentationGeometry.h"
 #include "oviora/gfx/PresentationHooks.h"
+#include "oviora/gfx/NvidiaAppProfile.h"
 #include "oviora/pipeline/AmdHipPreflight.h"
 #include "oviora/ui/InterfaceRenderer.h"
 #include "oviora/ui/QmlDataDirectory.h"
@@ -73,13 +84,22 @@
 #include "oviora/platform/PsnRelayBridge.h"
 #include "oviora/platform/PsnWebView.h"
 #include "oviora/platform/PsnAccountLookup.h"
+#include "oviora/platform/DiscordPresence.h"
+#include "oviora/platform/SubtitleScreen.h"
+#include "oviora/platform/IzletController.h"
+#include "oviora/ui/MenuBackdropStore.h"
 #include "oviora/remoteplay/ChiakiBackend.h"
+#include "oviora/remoteplay/WatchRoute.h"
 
 using namespace oviora;
 
 namespace {
 HWND g_video = nullptr;
 bool g_videoCursorHidden = false;
+QList<QRect> g_videoCoverHoles;
+int g_videoInsetBand = 0;
+// The region is emptied until the new source presents (blankVideo below)
+bool g_videoBlanked = false;
 
 // The video is a foreign HWND, not a Qt item. Match the QML cursor policy here
 // without a repaint, a polling timer or ShowCursor's process-wide counter.
@@ -94,14 +114,17 @@ bool pointerOverVideo() {
     ScreenToClient(g_video, &p);
     RECT client{};
     GetClientRect(g_video, &client);
-    if (!PtInRect(&client, p)) return false;
+    if (!PtInRect(&client, p) || g_videoBlanked) return false;
+    if (g_videoCoverHoles.isEmpty() && g_videoInsetBand > 0) {
+        if (p.y < g_videoInsetBand || p.y >= client.bottom - g_videoInsetBand) return false;
+    }
     // Floating QML controls are holes in this region; never override their
     // pointing/text cursors, nor any other application's cursor.
-    HRGN region = CreateRectRgn(0, 0, 0, 0);
-    const int kind = GetWindowRgn(g_video, region);
-    const bool inside = kind == ERROR || PtInRegion(region, p.x, p.y);
-    DeleteObject(region);
-    return inside;
+    for (qsizetype i = 0; i + 1 < g_videoCoverHoles.size(); i += 2) {
+        const QRect& h = g_videoCoverHoles[i];
+        if (h.contains(p.x, p.y)) return false;
+    }
+    return true;
 }
 
 void syncVideoCursor(bool hidden) {
@@ -121,11 +144,12 @@ bool g_videoHiddenByProbe = false;
 // frame until the new one presents, so its region is emptied instead. A slow PS5
 // connect after a capture card left the card's last frame up for 20 s and the
 // window looked frozen (field report 2026-10-01).
-bool g_videoBlanked = false;
 
 void blankVideo(const char* why) {
     if (!g_video || g_videoBlanked) return;
     g_videoBlanked = true;
+    g_videoCoverHoles.clear();
+    g_videoInsetBand = 0;
     const int result = SetWindowRgn(g_video, CreateRectRgn(0, 0, 0, 0), TRUE);
     oviora::log::info("qml-window", std::format("blank video until the new source presents ({}) result={}", why, result));
 }
@@ -281,22 +305,23 @@ struct Cover { QRectF rect; qreal radius = 0; };
 // The walk starts at the window's content item, NOT at the video host: the host is a
 // sibling of the pages, so searching under it finds nothing. (The cover walk has the
 // same shape and the same reason; both are rooted at the scene.)
-qreal videoInsetFraction(QQuickItem* item) {
-    if (!item) return 0.0;
-    if (item->objectName() == QLatin1String("videoInset"))
-        return item->property("frac").toReal();
-    for (QQuickItem* child : item->childItems()) {
-        const qreal f = videoInsetFraction(child);
-        if (f > 0.0) return f;
-    }
-    return 0.0;
+QQuickItem* findVideoInsetItem(QQuickItem* item) {
+    if (!item) return nullptr;
+    if (item->objectName() == QLatin1String("videoInset")) return item;
+    for (QQuickItem* child : item->childItems())
+        if (QQuickItem* found = findVideoInsetItem(child)) return found;
+    return nullptr;
 }
 
 qreal sceneInsetFraction(QQuickWindow* window) {
     if (!window) return 0.0;
-    QQuickItem* content = window->contentItem();
-    QQuickItem* root = content && content->parentItem() ? content->parentItem() : content;
-    return videoInsetFraction(root);
+    static QPointer<QQuickItem> cachedInset;
+    if (!cachedInset) {
+        QQuickItem* content = window->contentItem();
+        QQuickItem* root = content && content->parentItem() ? content->parentItem() : content;
+        cachedInset = findVideoInsetItem(root);
+    }
+    return cachedInset ? cachedInset->property("frac").toReal() : 0.0;
 }
 
 void collectCovers(QQuickItem* item, QList<Cover>& out) {
@@ -362,6 +387,8 @@ void syncVideoCovers(QQuickWindow* window, QQuickItem* host, qreal inset) {
         if (key == last) return;
         last = key;
     }
+    g_videoCoverHoles = holes;
+    g_videoInsetBand = insetBand;
     if (g_videoProbe == VideoProbeMode::NoRegion) {
         SetLastError(0);
         const int result = SetWindowRgn(g_video, nullptr, TRUE);
@@ -535,6 +562,48 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
     oviora::Logger::instance().flush();
     return EXCEPTION_CONTINUE_SEARCH;
 }
+
+bool g_traceUiStalls = false;
+struct UiStallStats {
+    uint64_t notifyCount = 0;
+    double notifyTotalMs = 0.0;
+    double notifyMaxMs = 0.0;
+    uint64_t over4Ms = 0;
+    uint64_t over16Ms = 0;
+    uint64_t over50Ms = 0;
+    uint64_t followCount = 0;
+    double followMaxMs = 0.0;
+    uint64_t wmMouseCount = 0;
+    uint64_t wmSetCursorCount = 0;
+    double wmMouseMaxGapMs = 0.0;
+    std::chrono::steady_clock::time_point lastWmMouse{};
+} g_uiStalls;
+
+class TracingApplication final : public QApplication {
+public:
+    using QApplication::QApplication;
+    bool notify(QObject* receiver, QEvent* event) override {
+        if (!g_traceUiStalls || QThread::currentThread() != thread())
+            return QApplication::notify(receiver, event);
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = QApplication::notify(receiver, event);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        ++g_uiStalls.notifyCount;
+        g_uiStalls.notifyTotalMs += ms;
+        if (ms > g_uiStalls.notifyMaxMs) g_uiStalls.notifyMaxMs = ms;
+        if (ms >= 4.0) ++g_uiStalls.over4Ms;
+        if (ms >= 16.0) ++g_uiStalls.over16Ms;
+        if (ms >= 50.0) ++g_uiStalls.over50Ms;
+        if (ms >= 5.0) {
+            const char* cls = receiver ? receiver->metaObject()->className() : "null";
+            const std::string name = receiver && !receiver->objectName().isEmpty()
+                ? receiver->objectName().toStdString() : std::string("-");
+            oviora::log::info("ui-stall-notify", std::format("ms={:.2f} type={} receiver={}/{}",
+                ms, int(event ? event->type() : QEvent::None), cls, name));
+        }
+        return ok;
+    }
+};
 } // namespace
 
 static int runApplication(int argc, char** argv, QString& restartProgram, QStringList& restartArgs) {
@@ -670,7 +739,18 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
             GetModuleHandleW(L"RTSSHooks64.dll") != nullptr, overlayCompatAuto ? "auto" : "off", gpuD3d12 ? "off (GPU interface)" : "on"));
         oviora::log::info("app", std::format("NVIDIA overlay running={} GamePP running={} Douyin companion running={} interface={}", nvidiaOverlay, gamePP, douyin, softwareUi ? "software" : "GPU"));
     }
-    QApplication app(argc, argv);
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--trace-ui-stalls") == 0) g_traceUiStalls = true;
+    }
+    if (qEnvironmentVariableIsSet("OVIORA_TEST_TRACE_UI_STALLS")) g_traceUiStalls = true;
+    if (g_traceUiStalls) SetEnvironmentVariableW(L"OVIORA_TEST_TRACE_UI_STALLS", L"1");
+    TracingApplication app(argc, argv);
+    // G-SYNC off for Oviora in the NVIDIA driver profile (gfx/NvidiaAppProfile.h); the driver database is slow
+    std::thread([] { oviora::log::info("gsync-profile", oviora::gfx::ensureFixedRefreshProfile()); }).detach();
+    if (g_traceUiStalls) {
+        app.setProperty("ovioraTraceUiStalls", true);
+        oviora::log::info("ui-stall", "main-thread stall tracing enabled");
+    }
     // Qt does not automatically use the executable's Win32 icon for its windows.
     // Load the same embedded multi-size resource for the taskbar and Alt+Tab.
     QIcon appIcon;
@@ -764,6 +844,8 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
         const int at = int(a.indexOf(QStringLiteral("--test-terms")));
         return oviora::subtitle::runTermsTest(at + 1 < a.size() ? a.at(at + 1) : QString());
     }
+    // --test-discord: a sample Discord activity for ~8 s, then cleared (0 = done, 2 = Discord not running)
+    if (QCoreApplication::arguments().contains(QStringLiteral("--test-discord"))) return DiscordPresence::runTest();
 
     g_video = createVideoWindow();
 
@@ -846,6 +928,8 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     engine.rootContext()->setContextProperty(QStringLiteral("vySoftwareUi"), softwareUi);
     engine.addImportPath(QCoreApplication::applicationDirPath() + "/qml");
     engine.rootContext()->setContextProperty(QStringLiteral("oviora"), &bridge);
+    // The stream menu's live backdrop (image://oviora-menu/<serial>, QmlPlayerBridge::requestMenuBackdrop)
+    engine.addImageProvider(QStringLiteral("oviora-menu"), new oviora::ui::MenuBackdropProvider);
     bridge.setQmlEngine(&engine);   // Qt.uiLanguage drives the per-language font (Theme.qml)
 
     // Oviora platform: account, friends, consoles over PSN (the Oviora server). Only a package
@@ -869,6 +953,23 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     // applyUpdate() waits, and the server announces it again when the session has ended.
     QObject::connect(platform, &OvioraServer::updateReady, &app, [platform] { platform->applyUpdate(); }, Qt::QueuedConnection);
     engine.rootContext()->setContextProperty(QStringLiteral("platform"), platform);
+    // PS5s paired on the home network are kept in the Oviora account (bridge/RemotePlay.cpp): only
+    // while signed in, merged once at start and at every sign-in.
+    bridge.setAccountCall([platform](const QString& action, const QJsonObject& body,
+                                     std::function<void(const QJsonObject&, const QString&)> done) {
+        if (platform->signedIn()) platform->call(action, body, std::move(done));
+    });
+    {
+        auto syncedUser = std::make_shared<QString>();
+        auto sync = [platform, &bridge, syncedUser] {
+            const QString user = platform->signedIn() ? platform->user() : QString();
+            if (user == *syncedUser) return;
+            *syncedUser = user;
+            if (!user.isEmpty()) bridge.syncAccountConsoles();
+        };
+        QObject::connect(platform, &OvioraServer::changed, &app, sync);
+        sync();
+    }
     // End-to-end encrypted messages between friends (the same server actions as the old Oviora)
     auto* messages = new MessageCenter(platform, &app);
     engine.rootContext()->setContextProperty(QStringLiteral("messages"), messages);
@@ -876,8 +977,68 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
         QString::fromStdWString((dataDirectory / L"altyazi.json").wstring()));
     subtitles->setServer(platform);
     engine.rootContext()->setContextProperty(QStringLiteral("subtitles"), subtitles.get());
+    // The translated line on a phone (Ctrl+O > Altyazı > Telefonda göster): pushed as it changes
+    auto* subtitleScreen = new SubtitleScreen(&app);
+    QObject::connect(subtitles.get(), &oviora::subtitle::SubtitleTranslator::textChanged, subtitleScreen,
+                     [subtitleScreen, s = subtitles.get()] { subtitleScreen->setText(s->text(), s->sourceText()); });
+    engine.rootContext()->setContextProperty(QStringLiteral("subtitleScreen"), subtitleScreen);
+    // --test-subscreen: sharing on at start, a made-up line every 700 ms and the address in the log (test runs only)
+    if (QCoreApplication::arguments().contains(QStringLiteral("--test-subscreen"))) {
+        subtitleScreen->setLocalOnly(true);
+        subtitleScreen->start();
+        oviora::log::info("subtitle-screen", "test address " + subtitleScreen->url().toStdString() + " test code " + subtitleScreen->code().toStdString());
+        auto* feed = new QTimer(subtitleScreen);
+        auto n = std::make_shared<int>(0);
+        QObject::connect(feed, &QTimer::timeout, subtitleScreen, [subtitleScreen, n] {
+            ++*n;
+            subtitleScreen->setText(QStringLiteral("Deneme satırı %1 / İkinci satır: ğüşıöç").arg(*n), QStringLiteral("Test line %1").arg(*n));
+        });
+        feed->start(700);
+    } else {
+        subtitleScreen->resume();   // left on last time: phones find it again by themselves
+    }
+    // İzlet (Ctrl+O > İzlet): the stream watched live by friends in the browser, through the server's web gateway
+    IzletController::Hooks izletHooks;
+#ifdef OVIORA_ENABLE_REMOTEPLAY
+    izletHooks.setTee = [&controller](oviora::remoteplay::MediaRelayCallbacks tee) { controller.setRemotePlayMediaTee(std::move(tee)); };
+    izletHooks.requestIdr = [&controller] { controller.requestRemotePlayIdr(); };
+    // Canlı yayınlar > İzle: a friend's broadcast in this app's own player
+    izletHooks.connectWatch = [&bridge](std::shared_ptr<oviora::remoteplay::WatchRoute> route, const QString& title) {
+        return bridge.connectWatch(std::move(route), title);
+    };
+    izletHooks.stopWatch = [&bridge] { bridge.ps5Cancel(); };
+#endif
+    auto* izlet = new IzletController(platform, std::move(izletHooks), &app);
+    engine.rootContext()->setContextProperty(QStringLiteral("izlet"), izlet);
+    {
+        auto sync = [izlet, &bridge] {
+            const QVariantMap c = bridge.connection();
+            const QString stage = c.value(QStringLiteral("stage")).toString();
+            const bool watching = c.value(QStringLiteral("watching")).toBool();
+            izlet->setWatchState(watching, stage);
+            izlet->setStream(!watching && (stage == QLatin1String("live") || stage == QLatin1String("retrying")),
+                             c.value(QStringLiteral("codec")).toString(),
+                             c.value(QStringLiteral("console")).toString());
+        };
+        if (QCoreApplication::arguments().contains(QStringLiteral("--test-izlet"))) {
+            izlet->showTest();
+        } else {
+            QObject::connect(&bridge, &ui::QmlPlayerBridge::connectionChanged, izlet, sync);
+            sync();
+        }
+    }
     auto* psnWeb = new PsnWebView(nullptr, &app);
     engine.rootContext()->setContextProperty(QStringLiteral("psnWeb"), psnWeb);
+    // Oyun bilgisi: Sony's sign-in value goes from the page straight to the server, never through QML
+    psnWeb->setWideSink([platform](int link, QByteArray& value, bool linked) { platform->wideLinkPsn(link, value, linked); });
+    // "PSN hesabını bağla" with "Oyun bilgisini de aç": the page held after the redirect reads Sony's
+    // sign-in for the account psn_link just linked (or renewed); a failed link drops it
+    QObject::connect(platform, &OvioraServer::psnLinkFinished, psnWeb, [psnWeb](bool ok, int link) {
+        if (!psnWeb->holdingForWide()) return;
+        if (ok) psnWeb->readWideFor(link);
+        else psnWeb->close();
+    });
+    QObject::connect(psnWeb, &PsnWebView::linkWideFailed, platform, [platform] { platform->wideLinkSoftFailed(); });
     // The console dialog's "PSN ile giriş yap": any account's id, nothing linked or stored
     engine.rootContext()->setContextProperty(QStringLiteral("psnLookup"), new PsnAccountLookup(&app));
     // The leased session ended (or never started): the server frees the console
@@ -885,11 +1046,120 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
         auto* watch = new QTimer(&app);
         auto wasActive = std::make_shared<bool>(false);
         QObject::connect(watch, &QTimer::timeout, platform, [platform, &bridge, wasActive] {
-            const bool active = bridge.remotePlayActive();
+            const bool active = bridge.remotePlayActive() && !bridge.connection().value(QStringLiteral("watching")).toBool();
             if (platform->sessionState() == QLatin1String("playing") && !active && *wasActive) platform->sessionEnded();
             *wasActive = active || platform->sessionState() == QLatin1String("asking");
         });
         watch->start(2000);
+    }
+    // The game running on a PS5 of this network goes to the server (console_app): friends see it whichever
+    // PSN account plays, also with "Oyun bilgisi" off. The server keeps only my own PS5s.
+    QObject::connect(&bridge, &ui::QmlPlayerBridge::lanChanged, platform, [platform, &bridge] {
+        if (!platform->signedIn()) return;
+        for (const auto& v : bridge.lanConsoles()) {
+            const QVariantMap c = v.toMap();
+            const QString id = c.value(QStringLiteral("id")).toString();
+            if (!c.value(QStringLiteral("discovered")).toBool() || id.isEmpty()) continue;
+            const QString app = c.value(QStringLiteral("app")).toString();
+            const QString state = c.value(QStringLiteral("state")).toString() == QLatin1String("standby") ? QStringLiteral("standby")
+                                : app.isEmpty() ? QStringLiteral("idle") : QStringLiteral("running");
+            platform->reportConsoleApp(id, app, c.value(QStringLiteral("titleId")).toString(), state, c.value(QStringLiteral("hostName")).toString());
+        }
+    });
+    // Discord Rich Presence (Genel -> Gizlilik): the game, whose PS5 and since when, while a stream is live
+    {
+        auto* discord = new DiscordPresence(&app);
+        auto startedMs = std::make_shared<qint64>(0);
+        auto wasLive = std::make_shared<bool>(false);
+        auto update = [discord, platform, &bridge, startedMs, wasLive] {
+            // Fast exit when idle and Remote Play is inactive so ps5Changed/lanChanged/accountChanged
+            // do not build QVariantMaps unnecessarily.
+            const bool active = bridge.remotePlayActive() && !bridge.connection().value(QStringLiteral("watching")).toBool();
+            if (!active && !*wasLive && *startedMs == 0) {
+                discord->setEnabled(bridge.preferences().value(QStringLiteral("discordPresence"), true).toBool());
+                discord->setIdle();
+                return;
+            }
+            const QVariantMap prefs = bridge.preferences();
+            const bool enabled = prefs.value(QStringLiteral("discordPresence"), true).toBool();
+            discord->setEnabled(enabled);
+            if (!enabled) { *startedMs = 0; *wasLive = false; discord->setIdle(); return; }
+            // Live from the first picture; a short reconnect keeps the start time
+            const QString stage = active ? bridge.connection().value(QStringLiteral("stage")).toString() : QString();
+            const bool live = active
+                && (stage == QLatin1String("live") || (*startedMs && stage == QLatin1String("retrying")));
+            if (!live) { *startedMs = 0; *wasLive = false; discord->setIdle(); return; }
+            *wasLive = true;
+            if (!*startedMs) *startedMs = QDateTime::currentMSecsSinceEpoch();
+            // Whose PS5: a platform lease names the console (available: mine, host = its owner's name);
+            // a connection on this network is always to a PS5 paired with this PC
+            QString duid, game, titleId, owner, icon;
+            bool friendConsole = false;
+            int psnLink = 0;   // the own PSN account of the console's row (its "Oyun bilgisi" knows the game)
+            auto fromAccount = [&](const QString& id) {
+                for (const auto& list : {platform->available(), platform->consoles()})
+                    for (const auto& v : list) {
+                        const QVariantMap c = v.toMap();
+                        if (id.isEmpty() || c.value(QStringLiteral("duid")).toString().compare(id, Qt::CaseInsensitive) != 0) continue;
+                        if (game.isEmpty()) game = c.value(QStringLiteral("app")).toMap().value(QStringLiteral("name")).toString();
+                        if (!psnLink) psnLink = c.value(QStringLiteral("psn_link")).toInt();
+                        if (c.contains(QStringLiteral("mine")) && !c.value(QStringLiteral("mine")).toBool()) {
+                            friendConsole = true;
+                            owner = c.value(QStringLiteral("host")).toString();
+                        }
+                        return true;
+                    }
+                return false;
+            };
+            // What an own PSN account with "Oyun bilgisi" plays now (server: psn_links[].playing, at most a minute old)
+            auto ownPlaying = [&](int link) {
+                for (const auto& v : platform->psnLinks()) {
+                    const QVariantMap l = v.toMap(), p = l.value(QStringLiteral("playing")).toMap();
+                    if (!p.value(QStringLiteral("game")).toString().isEmpty() && (!link || l.value(QStringLiteral("id")).toInt() == link)) return p;
+                }
+                return QVariantMap();
+            };
+            bool lan = false;
+            if (platform->sessionState() == QLatin1String("playing") && !platform->sessionDuid().isEmpty()) {
+                duid = platform->sessionDuid();
+                fromAccount(duid);
+            } else {
+                lan = true;
+                // What this network's discovery saw the console run before the stream (it pauses while streaming)
+                const QString host = bridge.ps5().value(QStringLiteral("host")).toString();
+                for (const auto& v : bridge.lanConsoles()) {
+                    const QVariantMap c = v.toMap();
+                    if (host.isEmpty() || c.value(QStringLiteral("address")).toString() != host) continue;
+                    game = c.value(QStringLiteral("app")).toString();
+                    titleId = c.value(QStringLiteral("titleId")).toString();
+                    duid = c.value(QStringLiteral("id")).toString();
+                }
+                fromAccount(duid);
+                friendConsole = false;
+                owner.clear();
+            }
+            // Own PS5: PSN's word is the freshest (the home network's look is from before the stream). Through the
+            // platform the row's own account; on this network the first own account that plays something
+            if (!friendConsole && (psnLink || lan)) {
+                const QVariantMap p = ownPlaying(lan ? 0 : psnLink);
+                if (!p.isEmpty()) {
+                    game = p.value(QStringLiteral("game")).toString();
+                    icon = p.value(QStringLiteral("icon")).toString();
+                }
+            }
+            // Only a title id: the name from the subtitle term lists, else "PS5'te oynuyor"
+            if (game.isEmpty()) game = DiscordPresence::gameForTitleId(!titleId.isEmpty() ? titleId : platform->runningTitleId(duid));
+            // Streamer mode hides account names: "a friend's PS5" without the name
+            if (prefs.value(QStringLiteral("streamerMode")).toBool()) owner.clear();
+            discord->setPlaying(game, icon, friendConsole, owner, *startedMs);
+        };
+        QObject::connect(&bridge, &ui::QmlPlayerBridge::connectionChanged, discord, update);
+        QObject::connect(&bridge, &ui::QmlPlayerBridge::ps5Changed, discord, update);
+        QObject::connect(&bridge, &ui::QmlPlayerBridge::lanChanged, discord, update);
+        QObject::connect(&bridge, &ui::QmlPlayerBridge::preferencesChanged, discord, update);
+        QObject::connect(platform, &OvioraServer::changed, discord, update);
+        QObject::connect(platform, &OvioraServer::accountChanged, discord, update);
+        update();
     }
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
@@ -912,9 +1182,16 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     //   --data-dir <path>       presets and session history from that folder (read before the bridge exists)
     //   --import-1.4.4-data <path>  read-only legacy settings source for first 2.0.0 launch
     //   --motion-probe <name>   switch | seg: start that motion, log its value per frame
-    //   --test-connect <lan|psn>  connect to the PS5 by itself (test runs)
+    //   --test-connect <lan|psn|psn-arkadas>  connect to the PS5 (own, or a friend's shared one) by itself (test runs)
+    //   --test-login <file>     sign in with the account in this file (kullanici=, sifre=) (test runs)
     //   --test-drag <edge:dx[;dy]@s,...>  border drags of this window (WM_SIZING), e.g. right:300@20
-    //   --test-chat <friend>    open that friend's message window (only opens it; nothing is sent)
+    //   --test-chat <friend>    open that friend's message window (only opens it; nothing is sent);
+    //                           #<id> opens that group's conversation
+    //   --test-groups           made-up friends with presence, groups and a group conversation, only on
+    //                           screen while signed out (OvioraServer, MessageCenter); nothing is sent
+    //   --test-consoles <n>     with --test-psn-links: n made-up PS5s instead of two (OvioraServer)
+    //   --dialog shareconsoles  the first friend's "PS5 paylaş" window (home screen)
+    //   --dialog psnlink        the "PSN hesabını bağla" popup alone (no Sony page is loaded)
     //   --test-mask <rect|ellipse>@s[,drag@s|esc@s]  region drawing of "Tüm efektleri hariç tut":
     //                           the draw button, then a drag / Esc sent to the app's own drawing window
     //   --exit-after <ms>       quit the app by itself after N ms, so a test run ends
@@ -932,10 +1209,22 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     int subtitleTest = 0;
     QString testKeys;
     QString testMouse;
+    bool testWmMouse = false;
+    bool testPadCapture = false;
+    QString testVideo;
+    QString testIzleApi, testIzleToken, testIzleYid;
     for (int i = 1; i < args.size(); ++i) {
         const QString& a = args.at(i);
         const bool hasValue = i + 1 < args.size();
-        if (a == QLatin1String("--page") && hasValue) {
+        if (a == QLatin1String("--trace-ui-stalls")) {
+            g_traceUiStalls = true;
+        } else if (a == QLatin1String("--test-wm-mouse")) {
+            testWmMouse = true;
+        } else if (a == QLatin1String("--test-pad-capture")) {
+            testPadCapture = true;
+        } else if (a == QLatin1String("--test-video") && hasValue) {
+            testVideo = args.at(++i);
+        } else if (a == QLatin1String("--page") && hasValue) {
             bridge.setInitialPage(args.at(++i));
         } else if (a == QLatin1String("--section") && hasValue) {
             testOptions.insert(QStringLiteral("section"), args.at(++i));   // Oviora settings section
@@ -970,6 +1259,10 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
             testDrag = args.at(++i);      // e.g. right:300@20,bottom:-150@24,topleft:-200;-40@28 (border drags)
         } else if (a == QLatin1String("--test-connect") && hasValue) {
             testConnect = args.at(++i);   // lan | psn: connect to my PS5 by itself (test runs)
+        } else if (a == QLatin1String("--test-izle-yerel") && i + 3 < args.size()) {
+            testIzleApi = args.at(++i);
+            testIzleToken = args.at(++i);
+            testIzleYid = args.at(++i);
         } else if (a == QLatin1String("--video-probe") && hasValue) {
             const QString mode = args.at(++i);
             if (mode == QLatin1String("hidden")) g_videoProbe = VideoProbeMode::Hidden;
@@ -1069,6 +1362,28 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
         oviora::Logger::instance().flush();
         QCoreApplication::quit();
     }, Qt::DirectConnection);
+    // --test-login <file>: a test run signs in with the account in this file (kullanici=, sifre=; the test
+    // account) unless it is already signed in as it. The password is read here and passed on, never logged.
+    {
+        const int at = QCoreApplication::arguments().indexOf(QStringLiteral("--test-login"));
+        if (at > 0 && at + 1 < QCoreApplication::arguments().size()) {
+            QFile f(QCoreApplication::arguments().at(at + 1));
+            QString name, pass;
+            if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+                for (const QString& line : QString::fromUtf8(f.readAll()).split(QLatin1Char(10))) {
+                    const QString l = line.trimmed();
+                    if (l.startsWith(QLatin1String("kullanici="))) name = l.mid(10);
+                    else if (l.startsWith(QLatin1String("sifre="))) pass = l.mid(6);
+                }
+            if (!name.isEmpty() && !pass.isEmpty())
+                QTimer::singleShot(1500, platform, [platform, name, pass] {
+                    if (platform->user() == name) { oviora::log::info("test-login", "already signed in"); return; }
+                    oviora::log::info("test-login", "signing in with the test account");
+                    platform->login(name, pass);
+                });
+            else oviora::log::warn("test-login", "no account in the file");
+        }
+    }
     // --test-connect lan|psn: a test run connects to the first paired PS5 seen on this network,
     // or to my own PS5 over PSN through the Oviora server, without anyone clicking.
     if (!testConnect.isEmpty()) {
@@ -1088,11 +1403,13 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
                         return;
                     }
                 }
-            } else if (testConnect == QLatin1String("psn")) {
+            } else if (testConnect == QLatin1String("psn") || testConnect == QLatin1String("psn-arkadas")) {
+                // psn-arkadas: a PS5 a friend shared with this account (the server relays the PSN part)
+                const bool friendConsole = testConnect == QLatin1String("psn-arkadas");
                 for (const auto& v : platform->available()) {
                     const auto c = v.toMap();
-                    if (c.value("mine").toBool() && !c.value("busy").toBool()) {
-                        oviora::log::info("test-connect", "psn connect");
+                    if (c.value("mine").toBool() != friendConsole && !c.value("busy").toBool()) {
+                        oviora::log::info("test-connect", friendConsole ? "psn connect to a friend's PS5" : "psn connect");
                         platform->connectTo(c.value("host").toString(), c.value("duid").toString());
                         poll->stop();
                         return;
@@ -1101,6 +1418,152 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
             }
         });
         poll->start(1000);
+    }
+    // --test-izle-yerel <apiUrl> <token> <yid>: test-only native viewer joining an İzlet broadcast.
+    if (!testIzleApi.isEmpty() && !testIzleToken.isEmpty() && !testIzleYid.isEmpty()) {
+        struct LocalWatchState {
+            QNetworkAccessManager net;
+            QString apiUrl;
+            QString token;
+            QString yid;
+            QString iid;
+            qint64 after = 0;
+            bool stopped = false;
+            bool polling = false;
+            std::shared_ptr<oviora::remoteplay::WatchRoute> route;
+        };
+        auto st = std::make_shared<LocalWatchState>();
+        st->apiUrl = testIzleApi;
+        st->token = testIzleToken;
+        st->yid = testIzleYid;
+
+        auto postApi = [st](const QString& action, QJsonObject body,
+                            std::function<void(const QJsonObject&, int, bool)> done) {
+            body.insert(QStringLiteral("a"), action);
+            body.insert(QStringLiteral("token"), st->token);
+            body.insert(QStringLiteral("client"), QStringLiteral("win:test"));
+            QNetworkRequest req{QUrl(st->apiUrl)};
+            req.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
+            req.setTransferTimeout(5000);
+            QNetworkReply* reply = st->net.post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+            QObject::connect(reply, &QNetworkReply::finished, &st->net, [reply, done = std::move(done)]() {
+                const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                const bool ok = (reply->error() == QNetworkReply::NoError && httpStatus >= 200 && httpStatus < 400);
+                const QByteArray raw = reply->readAll();
+                reply->deleteLater();
+                const QJsonDocument doc = QJsonDocument::fromJson(raw);
+                if (done) done(doc.isObject() ? doc.object() : QJsonObject{}, httpStatus, ok);
+            });
+        };
+
+        auto* pollTimer = new QTimer(&app);
+        pollTimer->setSingleShot(true);
+        auto runPoll = std::make_shared<std::function<void()>>();
+        *runPoll = [st, pollTimer, postApi, runPoll, &app]() {
+            if (st->stopped || st->polling || st->iid.isEmpty()) return;
+            st->polling = true;
+            postApi(QStringLiteral("izle_poll"),
+                    QJsonObject{{QStringLiteral("iid"), st->iid}, {QStringLiteral("after"), double(st->after)}},
+                    [st, pollTimer, runPoll](const QJsonObject& r, int httpStatus, bool ok) {
+                        st->polling = false;
+                        if (st->stopped) return;
+                        if (!ok) {
+                            if (httpStatus == 403 || httpStatus == 404 || httpStatus == 410) {
+                                st->stopped = true;
+                                if (st->route) st->route->setEnded("Yayın bitti.");
+                                return;
+                            }
+                            pollTimer->start(1000);
+                            return;
+                        }
+                        for (const auto& v : r.value(QStringLiteral("signals")).toArray()) {
+                            const QJsonObject sigData = v.toObject().value(QStringLiteral("data")).toObject();
+                            if (st->route && !sigData.isEmpty()) {
+                                st->route->pushRemote(QJsonDocument(sigData).toJson(QJsonDocument::Compact).toStdString());
+                            }
+                        }
+                        st->after = std::max<qint64>(st->after, qint64(r.value(QStringLiteral("last")).toDouble(double(st->after))));
+                        const QString state = r.value(QStringLiteral("state")).toString();
+                        if (state == QLatin1String("bitti") || state == QLatin1String("hata")) {
+                            QString err = r.value(QStringLiteral("error")).toString();
+                            if (err.isEmpty()) err = QStringLiteral("Yayın bitti.");
+                            oviora::log::info("test-izle-yerel", std::format("poll ended state={} reason={}",
+                                state.toStdString(), err.toStdString()));
+                            st->stopped = true;
+                            if (st->route) st->route->setEnded(err.toStdString());
+                            return;
+                        }
+                        pollTimer->start(state == QLatin1String("canli") ? 1500 : 50);
+                    });
+        };
+        QObject::connect(pollTimer, &QTimer::timeout, &app, [runPoll]() { (*runPoll)(); });
+
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [st, pollTimer, postApi]() {
+            if (st->stopped) return;
+            st->stopped = true;
+            pollTimer->stop();
+            if (!st->iid.isEmpty()) {
+                postApi(QStringLiteral("izle_leave"), QJsonObject{{QStringLiteral("iid"), st->iid}}, nullptr);
+            }
+        });
+
+        QTimer::singleShot(300, &app, [&app, &bridge, st, postApi, runPoll]() {
+            oviora::log::info("test-izle-yerel", "joining broadcast");
+            postApi(QStringLiteral("izle_join"), QJsonObject{{QStringLiteral("yid"), st->yid}},
+                    [&app, &bridge, st, postApi, runPoll](const QJsonObject& r, int httpStatus, bool ok) {
+                        if (!ok || r.value(QStringLiteral("iid")).toString().isEmpty()) {
+                            oviora::log::error("test-izle-yerel", std::format("izle_join failed http={} err={}",
+                                httpStatus, r.value(QStringLiteral("error")).toString().toStdString()));
+                            return;
+                        }
+                        st->iid = r.value(QStringLiteral("iid")).toString();
+                        const QString codec = r.value(QStringLiteral("codec")).toString(QStringLiteral("h264"));
+                        const QString owner = r.value(QStringLiteral("owner")).toString();
+                        const QString console = r.value(QStringLiteral("console")).toString();
+                        const QString title = (!owner.isEmpty() && !console.isEmpty())
+                            ? QStringLiteral("%1 · %2").arg(owner, console)
+                            : (!owner.isEmpty() ? owner : QStringLiteral("Canlı Yayın"));
+
+                        auto route = std::make_shared<oviora::remoteplay::WatchRoute>();
+                        route->codec = codec.toStdString();
+                        for (const auto& iceItem : r.value(QStringLiteral("ice")).toArray()) {
+                            if (iceItem.isString()) {
+                                route->iceServers.push_back(iceItem.toString().toStdString());
+                            } else if (iceItem.isObject()) {
+                                const QJsonObject obj = iceItem.toObject();
+                                const QJsonValue urlsVal = obj.value(QStringLiteral("urls"));
+                                if (urlsVal.isString()) {
+                                    route->iceServers.push_back(urlsVal.toString().toStdString());
+                                } else if (urlsVal.isArray()) {
+                                    for (const auto& u : urlsVal.toArray()) {
+                                        if (u.isString()) route->iceServers.push_back(u.toString().toStdString());
+                                    }
+                                }
+                            }
+                        }
+                        std::weak_ptr<LocalWatchState> weakSt = st;
+                        route->sendSignal = [&app, weakSt, postApi](std::string json) {
+                            QMetaObject::invokeMethod(&app, [weakSt, postApi, json = std::move(json)]() {
+                                auto locked = weakSt.lock();
+                                if (!locked || locked->stopped || locked->iid.isEmpty()) return;
+                                const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+                                if (!doc.isObject()) return;
+                                postApi(QStringLiteral("izle_signal"),
+                                        QJsonObject{{QStringLiteral("iid"), locked->iid}, {QStringLiteral("data"), doc.object()}},
+                                        nullptr);
+                            }, Qt::QueuedConnection);
+                        };
+                        st->route = route;
+                        oviora::log::info("test-izle-yerel", std::format("joined codec={} title={}",
+                            codec.toStdString(), title.toStdString()));
+                        if (!bridge.connectWatch(route, title)) {
+                            oviora::log::error("test-izle-yerel", "connectWatch returned false");
+                            st->stopped = true;
+                            return;
+                        }
+                        (*runPoll)();
+                    });
+        });
     }
     // --test-drag: a border drag of this window without the mouse. The window gets what the
     // system's sizing loop sends it (WM_ENTERSIZEMOVE, WM_SIZING with the moved edge, the new
@@ -1257,6 +1720,7 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     // swapchain from a 1x1 window. The native calls only run when a value changed.
     auto follow = [window, &bridge] {
         if (!g_video) return;
+        const auto f0 = std::chrono::steady_clock::now();
         syncVideoCursor(window->property("fullscreenCursorHidden").toBool());
         // Only the pre-open hook attaches the popup and converts it to WS_CHILD.
         // GetParent() is null for an unattached WS_POPUP, so reparenting here on
@@ -1268,6 +1732,11 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
             if (IsWindowVisible(g_video)) {
                 oviora::log::info("qml-window", "follow: hide video because source snapshot is inactive");
                 ShowWindow(g_video, SW_HIDE);
+            }
+            if (g_traceUiStalls) {
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - f0).count();
+                ++g_uiStalls.followCount;
+                if (ms > g_uiStalls.followMaxMs) g_uiStalls.followMaxMs = ms;
             }
             return;
         }
@@ -1292,7 +1761,80 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
         }
         if (syncVideoGeometry(window, host))
             syncVideoCovers(window, host, sceneInsetFraction(window));
+        if (g_traceUiStalls) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - f0).count();
+            ++g_uiStalls.followCount;
+            if (ms > g_uiStalls.followMaxMs) g_uiStalls.followMaxMs = ms;
+            if (ms >= 2.0) oviora::log::info("ui-stall-follow", std::format("follow ms={:.2f}", ms));
+        }
     };
+    if (g_traceUiStalls) {
+        struct TraceNativeFilter final : QAbstractNativeEventFilter {
+            bool nativeEventFilter(const QByteArray& type, void* message, qintptr*) override {
+                if (type != "windows_generic_MSG" || !message) return false;
+                const auto* msg = static_cast<const MSG*>(message);
+                if (msg->message == WM_MOUSEMOVE) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (g_uiStalls.lastWmMouse.time_since_epoch().count() != 0) {
+                        const double gap = std::chrono::duration<double, std::milli>(now - g_uiStalls.lastWmMouse).count();
+                        if (gap > g_uiStalls.wmMouseMaxGapMs) g_uiStalls.wmMouseMaxGapMs = gap;
+                    }
+                    g_uiStalls.lastWmMouse = now;
+                    ++g_uiStalls.wmMouseCount;
+                } else if (msg->message == WM_SETCURSOR) {
+                    ++g_uiStalls.wmSetCursorCount;
+                }
+                return false;
+            }
+        };
+        static TraceNativeFilter traceNativeFilter;
+        app.installNativeEventFilter(&traceNativeFilter);
+
+        auto* traceDump = new QTimer(&app);
+        QObject::connect(traceDump, &QTimer::timeout, &app, [] {
+            oviora::log::info("ui-stall-summary", std::format(
+                "notifyCount={} totalMs={:.2f} maxMs={:.2f} >=4ms={} >=16ms={} >=50ms={} followCount={} followMaxMs={:.2f} wmMouse={} wmMouseMaxGapMs={:.2f} wmSetCursor={}",
+                g_uiStalls.notifyCount, g_uiStalls.notifyTotalMs, g_uiStalls.notifyMaxMs,
+                g_uiStalls.over4Ms, g_uiStalls.over16Ms, g_uiStalls.over50Ms,
+                g_uiStalls.followCount, g_uiStalls.followMaxMs,
+                g_uiStalls.wmMouseCount, g_uiStalls.wmMouseMaxGapMs, g_uiStalls.wmSetCursorCount));
+            g_uiStalls = {};
+        });
+        traceDump->start(2000);
+
+        static std::atomic<int> loggedFrames{0};
+        QObject::connect(window, &QQuickWindow::beforeSynchronizing, &app, [window] {
+            if (loggedFrames.fetch_add(1) < 30) {
+                oviora::log::info("ui-trace-frame", std::format(
+                    "sync n={} visible={} active={}",
+                    loggedFrames.load(), window->isVisible(), window->isActive()));
+            }
+        }, Qt::DirectConnection);
+    }
+    if (testWmMouse) {
+        auto* mouseSim = new QTimer(&app);
+        mouseSim->setTimerType(Qt::PreciseTimer);
+        auto step = std::make_shared<int>(0);
+        QObject::connect(mouseSim, &QTimer::timeout, &app, [window, step] {
+            if (!window || !window->isVisible()) return;
+            const HWND mainHwnd = reinterpret_cast<HWND>(window->winId());
+            const HWND target = mainHwnd;
+            for (int k = 0; k < 5; ++k) {
+                const int x = 200 + ((*step * 7) % 400);
+                const int y = 200 + ((*step * 3) % 250);
+                ++(*step);
+                PostMessageW(target, WM_MOUSEMOVE, 0, MAKELPARAM(x, y));
+                PostMessageW(target, WM_SETCURSOR, WPARAM(target), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+            }
+        });
+        QTimer::singleShot(2000, &app, [mouseSim] { mouseSim->start(5); });
+    }
+    if (!testVideo.isEmpty()) {
+        QTimer::singleShot(1500, &app, [&bridge, testVideo] { bridge.openTestVideo(testVideo); });
+    }
+    if (testPadCapture) {
+        QTimer::singleShot(1500, &app, [&bridge] { bridge.padCapture(true); });
+    }
     // Hold-to-compare (V by default) is the bridge's application event filter:
     // the key is rebindable (设置 → 快捷键) and can be switched off (显示 →
     // 按住 V 查看原画). A second hard-wired V filter here used to override both.
@@ -1413,6 +1955,7 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     const int rc = app.exec();
     // The hooks capture the bridge, which is destroyed before the app (and its child, the server)
     if (platform) platform->dropHooks();
+    bridge.setAccountCall({});
     if (rc == 42) {
         restartProgram = QCoreApplication::applicationFilePath();
         // Preserve the selected profile, not transient capture/open/test flags.

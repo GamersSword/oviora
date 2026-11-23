@@ -314,6 +314,15 @@ struct QmlPlayerBridge::Impl {
     QString lastScreenshot;
     QString pendingScreenshot;
     qint64 pendingScreenshotDeadline=0;
+    // The stream menu's backdrop frame: asked for (pending), on disk (ready, shown as menuBackdrop)
+    QString pendingBackdrop, menuBackdrop;
+    // The live backdrop: a small picture of the strip under the drawer, ~8 times a second while the menu is open
+    // (engine backdropTap), handed to QML through the "oviora-menu" image provider
+    QTimer* backdropLive = nullptr;
+    quint64 backdropLiveSerial = 0;
+    qint64 pendingBackdropDeadline=0;
+    int backdropSerial=0;
+    bool backdropWanted=false;   // false once the menu closed: a frame that arrives late is deleted
     bool holdKeyDown = false;
     std::vector<sink::RenderEndpoint> audioEndpoints;
     int uiDeviceGeneration = 0;   // interface scene graphs recreated after a lost device
@@ -335,11 +344,13 @@ struct QmlPlayerBridge::Impl {
     QVariantMap connection;
     QString connectionError;      // kept after a failed connection until the card is closed
     bool connectionPsn = false;   // the current/last connection goes over PSN
+    bool connectionWatching = false; // the current/last connection is watching an "İzlet" broadcast
     QString connectionName;       // the console's name for the connecting screen ("" = unknown)
     bool connectionSeen = false;  // a connection was opening or live in this attempt
     qint64 connectionStartMs = 0;
     std::filesystem::path ps5EditTarget;  // "Düzenle": the registered console whose file a new pairing replaces
     int pairRevision = 0;                 // grows with every saved pairing (the dialog sees an edit finish)
+    AccountCall accountCall;              // the Oviora server's call() (setAccountCall), empty without one
     QString wakeWaitKey;          // a woken console waited for (lanWake), connected when it answers as ready
     std::chrono::steady_clock::time_point wakeDeadline{};
     struct Ps5Outcome { std::wstring message; std::vector<std::pair<std::string, std::string>> hosts; std::wstring savedPath; bool refreshProfiles = false; };

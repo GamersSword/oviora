@@ -31,6 +31,8 @@
 #define STREAM_CONNECTION_PORT 9296
 
 #define EXPECT_TIMEOUT_MS 5000
+// Oviora: the Takion connect itself: three init and three cookie tries of 2 s each (takion.c) fit in it
+#define TAKION_CONNECT_TIMEOUT_MS 14000
 
 #define HEARTBEAT_INTERVAL_MS 1000
 
@@ -237,7 +239,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 		goto close_takion;
 	}
 
-	err = chiaki_cond_timedwait_pred(&stream_connection->state_cond, &stream_connection->state_mutex, EXPECT_TIMEOUT_MS, state_finished_cond_check, stream_connection);
+	err = chiaki_cond_timedwait_pred(&stream_connection->state_cond, &stream_connection->state_mutex, TAKION_CONNECT_TIMEOUT_MS, state_finished_cond_check, stream_connection);
 	assert(err == CHIAKI_ERR_SUCCESS || err == CHIAKI_ERR_TIMEOUT);
 	CHECK_STOP(close_takion);
 	if(err != CHIAKI_ERR_SUCCESS)

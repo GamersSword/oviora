@@ -1,5 +1,8 @@
 // QML bridge: Playback responsibilities.
 #include "../QmlPlayerBridge_p.h"
+#include "oviora/ui/MenuBackdropStore.h"
+#include <QTimer>
+#include <algorithm>
 #include "oviora/pipeline/NrReuse.h"
 
 namespace oviora::ui {
@@ -157,6 +160,13 @@ void QmlPlayerBridge::stopPlayback() {
     impl_->openingSessionId = 0;
     impl_->engine.stop();
 }
+void QmlPlayerBridge::openTestVideo(const QString& path) {
+    openAfterCinema(QString(), [this, path] {
+        auto& j = *impl_;
+        if (j.preOpen) j.preOpen();
+        j.engine.openTestFile(j.videoWindow, wideOf(path));
+    });
+}
 void QmlPlayerBridge::logUi(const QString& channel, const QString& text) {
     const std::string c = channel.toStdString();
     oviora::log::info(c.c_str(), text.toStdString());
@@ -187,5 +197,43 @@ void QmlPlayerBridge::takeScreenshot() {
     oviora::log::info("ui-screenshot", "requested path=" + path.toStdString());
     emit preferencesChanged();
 }
+
+// The stream menu's backdrop: the strip of the picture under the drawer, live (about 8 times a second). The engine
+// copies just that region of the processed frames (backdropTap, the subtitle tap's mechanism: never waits, nothing on
+// disk); here it is cut down to a small picture QML blurs and shows through the drawer's coat.
+void QmlPlayerBridge::requestMenuBackdrop(double widthFraction, bool leftEdge) {
+    auto& i = *impl_;
+    const float w = float(std::clamp(widthFraction, 0.1, 1.0));
+    // The strip under the drawer, on its edge (StreamMenu.place)
+    i.engine.backdropTap(hasSource(), leftEdge ? 0.0f : 1.0f - w, 0.0f, w, 1.0f, 125);
+    if (!hasSource()) return;
+    if (!i.backdropLive) {
+        i.backdropLive = new QTimer(this);
+        i.backdropLive->setInterval(60);
+        connect(i.backdropLive, &QTimer::timeout, this, [this] {
+            auto& d = *impl_;
+            engine::SubtitleSample s;
+            if (!d.engine.takeBackdropSample(s) || s.width == 0 || s.height == 0) return;
+            const QImage picture = MenuBackdropStore::toSmall(s);
+            if (picture.isNull()) return;
+            MenuBackdropStore::set(picture);
+            d.menuBackdrop = QStringLiteral("image://oviora-menu/%1").arg(++d.backdropLiveSerial);
+            emit menuBackdropChanged();
+        });
+    }
+    if (!i.backdropLive->isActive()) i.backdropLive->start();
+}
+
+void QmlPlayerBridge::clearMenuBackdrop() {
+    auto& i = *impl_;
+    i.engine.backdropTap(false, 0, 0, 0, 0, 125);
+    if (i.backdropLive) i.backdropLive->stop();
+    if (!i.menuBackdrop.isEmpty()) {
+        i.menuBackdrop.clear();
+        emit menuBackdropChanged();
+    }
+}
+
+QString QmlPlayerBridge::menuBackdrop() const { return impl_->menuBackdrop; }
 
 } // namespace oviora::ui
