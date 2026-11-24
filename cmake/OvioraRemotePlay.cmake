@@ -5,8 +5,7 @@ add_library(oviora_remoteplay_core STATIC
     "${OVIORA_ROOT}/src/remoteplay/AnnexB.cpp"
     "${OVIORA_ROOT}/src/remoteplay/Timeline.cpp"
     "${OVIORA_ROOT}/src/remoteplay/VideoIngress.cpp"
-    "${OVIORA_ROOT}/src/remoteplay/SessionInbox.cpp"
-    "${OVIORA_ROOT}/src/remoteplay/WatchRoute.cpp")
+    "${OVIORA_ROOT}/src/remoteplay/SessionInbox.cpp")
 target_include_directories(oviora_remoteplay_core PUBLIC "${OVIORA_ROOT}/include")
 target_compile_features(oviora_remoteplay_core PUBLIC cxx_std_20)
 set_target_properties(oviora_remoteplay_core PROPERTIES CXX_EXTENSIONS OFF)
@@ -55,13 +54,3 @@ add_library(oviora_remoteplay_chiaki STATIC
 target_compile_features(oviora_remoteplay_chiaki PUBLIC cxx_std_20)
 target_compile_definitions(oviora_remoteplay_chiaki PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(oviora_remoteplay_chiaki PUBLIC oviora_remoteplay_core PRIVATE chiaki-lib crypt32 iphlpapi shell32 ole32 winhttp)
-if(OVIORA_IZLET AND TARGET LibDataChannel::LibDataChannel)
-    target_sources(oviora_remoteplay_chiaki PRIVATE
-        "${OVIORA_ROOT}/src/remoteplay/WatchReceiver.cpp"
-        "${OVIORA_ROOT}/src/remoteplay/WatchReceiver.h")
-    target_compile_definitions(oviora_remoteplay_chiaki PUBLIC OVIORA_HAS_IZLET=1)
-    target_link_libraries(oviora_remoteplay_chiaki PRIVATE LibDataChannel::LibDataChannel)
-    if(TARGET nlohmann_json::nlohmann_json)
-        target_link_libraries(oviora_remoteplay_chiaki PRIVATE nlohmann_json::nlohmann_json)
-    endif()
-endif()

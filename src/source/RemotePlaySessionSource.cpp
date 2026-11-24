@@ -34,7 +34,6 @@ bool RemotePlaySessionSource::connect(RemotePlayConnectDesc desc) {
 }
 void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc desc) {
     alive_.store(true);
-    const bool isWatch=desc.request.watch!=nullptr;
     RemotePlaySource source;
     remoteplay::StreamRecovery recovery;
     bool repeatedTestDisconnect=false;
@@ -55,17 +54,9 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
     bool micApplied=false,micFailed=false;uint64_t micBlocksSent=0;
     std::deque<double> lossHistory;
     auto nextLink=std::chrono::steady_clock::now();
-    auto lastTeeIdr=std::chrono::steady_clock::now()-std::chrono::seconds(1);
     auto serviceExtras=[&](bool media){
-        bool bed=false,wanted=false,applyTee=false;std::deque<std::vector<std::int16_t>> blocks;
-        remoteplay::MediaRelayCallbacks teeCopy;
-        {std::lock_guard lock(mutex_);bed=std::exchange(bedRequested_,false);wanted=micWanted_;blocks.swap(micBlocks_);
-            if(media&&teeDirty_){teeCopy=tee_;teeDirty_=false;applyTee=true;}}
-        if(applyTee)source.setMediaTee(std::move(teeCopy));
-        if(media&&idrRequested_.exchange(false,std::memory_order_relaxed)){
-            const auto idrNow=std::chrono::steady_clock::now();
-            if(idrNow-lastTeeIdr>=std::chrono::milliseconds(500)){lastTeeIdr=idrNow;(void)source.requestIdr();}
-        }
+        bool bed=false,wanted=false;std::deque<std::vector<std::int16_t>> blocks;
+        {std::lock_guard lock(mutex_);bed=std::exchange(bedRequested_,false);wanted=micWanted_;blocks.swap(micBlocks_);}
         const auto now=std::chrono::steady_clock::now();
         const bool sample=now>=nextLink;
         remoteplay::NativeSnapshot n;
@@ -92,20 +83,14 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
     try {
         const bool ok=source.connect(desc);
         if(!ok){
-            if(isWatch){retry=false;}
-            else{retryWasRpInUse=source.nativeSnapshot().startupRetryAllowed;retry=recovery.poll(milliseconds(),false,true)==remoteplay::StreamRecovery::Action::Reconnect;}
+            retryWasRpInUse=source.nativeSnapshot().startupRetryAllowed;retry=recovery.poll(milliseconds(),false,true)==remoteplay::StreamRecovery::Action::Reconnect;
         }
         {std::lock_guard lock(mutex_);publishedInfo_=source.info();if(!initialized_)started_=ok;failed_=!ok&&!retry;initialized_=true;telemetryInbox_=source.telemetryInbox();
-            if(failed_){
-                if(isWatch){
-                    const std::string why=source.watchEndReason();
-                    recovery_.message=utf8ToWide(why.empty()?"Yayına bağlanılamadı.":why);
-                }else{
-                    recovery_.message=desc.controlOnly?L"PS5 手柄控制连接失败，请检查主机及网络；已保存的配对无需重输。":L"PS5 串流连接失败，请检查主机及网络；已保存的配对无需重输。";
-                }
-            }}
+            if(failed_)
+                recovery_.message=desc.controlOnly?L"PS5 手柄控制连接失败，请检查主机及网络；已保存的配对无需重输。":L"PS5 串流连接失败，请检查主机及网络；已保存的配对无需重输。";
+            }
         ready_.notify_all();
-        if(ok&&desc.controlOnly&&!isWatch) {
+        if(ok&&desc.controlOnly) {
             // PS5 手柄控制: the capture card is the picture. No decoder, no WASAPI,
             // no mailbox: the backend counts and drops the console's keepalive
             // video, and that count is the progress StreamRecovery watches.
@@ -165,11 +150,6 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                 else Sleep(1);
             }
         } else if(ok) {
-            {
-                remoteplay::MediaRelayCallbacks initialTee;
-                {std::lock_guard lock(mutex_);initialTee=tee_;teeDirty_=false;}
-                if(initialTee.onVideo||initialTee.onAudio)source.setMediaTee(std::move(initialTee));
-            }
             monitor=std::jthread([inbox=source.telemetryInbox()](std::stop_token cancel){
                 while(!cancel.stop_requested()){
                     const auto s=inbox->snapshot();const auto now=remoteplay::monotonic100ns();
@@ -209,7 +189,7 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
             wchar_t disconnectAfter[24]{};uint64_t testDisconnectFrames=0;bool testDisconnected=false;
             if(!recovery.reconnects()&&GetEnvironmentVariableW(L"OVIORA_TEST_REMOTEPLAY_DISCONNECT_AFTER_FRAMES",disconnectAfter,24))testDisconnectFrames=std::clamp<uint64_t>(_wtoi64(disconnectAfter),60,3600);
             while(!stop.stop_requested()) {
-                if(!isWatch){
+                {
                     std::string pin;
                     {std::lock_guard lock(mutex_);pin.swap(pin_);}
                     if(!pin.empty()) {
@@ -219,7 +199,7 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                     serviceExtras(true);
                 }
                 const auto now=std::chrono::steady_clock::now();
-                if(!isWatch&&!desc.request.viewOnly&&now>=nextController) {
+                if(!desc.request.viewOnly&&now>=nextController) {
                     remoteplay::ControllerState controller;
                     {std::lock_guard lock(mutex_);controller=takeControllerLocked(remoteplay::monotonic100ns());}
                     const auto r=source.submitController(controller);
@@ -261,16 +241,7 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                         log::warn("remoteplay-recovery-test",std::format("injected owned transport stop ok={} code={} (no console power command)",r.ok,r.code));
                     }
                 } else {
-                    if(isWatch){
-                        if(result==SourceReadStatus::Error){
-                            const std::string why=source.watchEndReason();
-                            log::info("watch-session",std::format("watch ended: {}",why.empty()?"Yayına bağlanılamadı.":why));
-                            std::lock_guard lock(mutex_);failed_=true;recovery_.active=false;
-                            recovery_.message=utf8ToWide(why.empty()?"Yayına bağlanılamadı.":why);
-                            break;
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                    }else{
+                    {
                         if(const int stage=int(remoteplay::connectStage());stage!=lastStage){
                             recovery.handshakeProgress(milliseconds());
                             lastStage=stage;
@@ -405,14 +376,6 @@ remoteplay::ControllerState RemotePlaySessionSource::takeControllerLocked(remote
 }
 void RemotePlaySessionSource::loginPin(std::string pin){std::lock_guard lock(mutex_);SecureZeroMemory(pin_.data(),pin_.size());pin_=std::move(pin);}
 void RemotePlaySessionSource::gotoBed(){std::lock_guard lock(mutex_);bedRequested_=true;}
-void RemotePlaySessionSource::setMediaTee(remoteplay::MediaRelayCallbacks tee){
-    std::lock_guard lock(mutex_);
-    tee_=std::move(tee);
-    teeDirty_=true;
-}
-void RemotePlaySessionSource::requestIdr(){
-    idrRequested_.store(true,std::memory_order_relaxed);
-}
 void RemotePlaySessionSource::microphone(bool on){std::lock_guard lock(mutex_);micWanted_=on;if(!on)micBlocks_.clear();}
 void RemotePlaySessionSource::microphonePcm(std::vector<std::int16_t> block){
     if(block.size()!=480*2)return;

@@ -75,10 +75,7 @@ Item {
     readonly property bool soundShown: section === "sound"
     readonly property bool subsShown: section === "subs"
     readonly property bool phoneShown: section === "subsphone"
-    readonly property bool izletShown: section === "izlet"
     readonly property bool settingsShown: section === "settings"
-    // A friend's broadcast watched (Canlı yayınlar): only the picture, nothing that talks to a PS5
-    readonly property bool watching: oviora.connection && oviora.connection.watching === true
     // The drawer: narrow for the list and the small sections, wider for messages and the picture settings,
     // widest for the keys table; never wider than the window
     width: Math.min(owner.width, keysShown ? Math.max(560, Math.min(980, Math.round(owner.width * 0.72)))
@@ -181,7 +178,6 @@ Item {
         else if (soundShown) soundFirst.forceActiveFocus(Qt.TabFocusReason)
         else if (subsShown) subsFirst.forceActiveFocus(Qt.TabFocusReason)
         else if (phoneShown) { subtitleScreen.start(); phoneBack.forceActiveFocus(Qt.TabFocusReason) }
-        else if (izletShown) izletFirst.forceActiveFocus(Qt.TabFocusReason)
         else if (settingsShown) {
             const back = settingsPanel.cameFrom
             Qt.callLater(() => { if (menu.settingsShown) (back && back.visible && back.enabled ? back : settingsFirst).forceActiveFocus(Qt.TabFocusReason) })
@@ -945,17 +941,6 @@ Item {
                 opens: true
                 onClicked: { mainPanel.cameFrom = messagesItem; menu.openChat("") }
             }
-            // Friends watch the stream in the browser (Ctrl+O > İzlet)
-            DrawerItem {
-                id: izletRow
-                visible: izlet.available && !menu.watching
-                text: qsTr("İzlet")
-                glyph: "broadcast"
-                opens: true
-                value: izlet.state === "canli" ? qsTr("Yayında · %1").arg(izlet.viewers.length) : izlet.state === "aciliyor" ? qsTr("Açılıyor") : qsTr("Kapalı")
-                tone: izlet.state === "canli" ? Tema.danger : Tema.text
-                onClicked: mainPanel.enter(izletRow, "izlet")
-            }
             DrawerItem {
                 id: screenshotRow
                 text: qsTr("Ekran görüntüsü")
@@ -975,7 +960,6 @@ Item {
 
             DrawerItem {
                 id: sleepRow
-                visible: !menu.watching
                 text: qsTr("Dinlenmeye al")
                 glyph: "sleep"
                 tone: Tema.warm
@@ -987,7 +971,7 @@ Item {
             }
             DrawerItem {
                 id: disconnectRow
-                text: menu.watching ? qsTr("İzlemeyi bitir") : qsTr("Bağlantıyı kes")
+                text: qsTr("Bağlantıyı kes")
                 glyph: "close"
                 tone: Tema.danger
                 onClicked: menu.requestDisconnect()
@@ -1049,7 +1033,6 @@ Item {
             }
             DrawerItem {
                 id: keysRow
-                visible: !menu.watching
                 text: qsTr("Klavye ve fare")
                 glyph: "keyboard"
                 opens: true
@@ -1142,7 +1125,6 @@ Item {
             // The microphone to the PS5 (oviora.micOn / toggleMicrophone)
             DrawerItem {
                 id: micRow
-                visible: !menu.watching
                 readonly property bool micOn: oviora.micOn
                 Layout.topMargin: 6
                 text: qsTr("Mikrofon")
@@ -1395,172 +1377,6 @@ Item {
             }
         }
     }
-
-    // ── İzlet: the stream watched live by friends in the browser (IzletController, context property "izlet") ──
-    property bool izletTellFriends: true
-    FocusScope {
-        id: izletPanel
-        visible: menu.izletShown
-        opacity: menu.panelFx
-        transform: Translate { x: (1 - menu.panelFx) * menu.panelFrom }
-        anchors.fill: parent
-        readonly property bool on: izlet.state === "canli" || izlet.state === "aciliyor"
-        Keys.onUpPressed: menu.stepFocus(izletPanel, false)
-        Keys.onDownPressed: menu.stepFocus(izletPanel, true)
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 22
-            anchors.topMargin: 24
-            spacing: 12
-            SectionHeader { Layout.fillWidth: true; title: qsTr("İzlet") }
-            Text {
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                Layout.topMargin: 4
-                wrapMode: Text.WordWrap
-                text: qsTr("Oynadığını arkadaşların ve grup üyelerin tarayıcıdan canlı izlesin. Görüntü bir kez, yeniden sıkıştırılmadan Oviora sunucusuna gider; en çok 20 kişi izleyebilir. Kaydedilmez.")
-                font.family: Tema.body
-                font.pixelSize: 14
-                lineHeight: 1.15
-                color: Tema.muted
-            }
-            // State: a dot and a word, the watchers' count and the rate going out to them
-            Row {
-                Layout.topMargin: 4
-                spacing: 8
-                visible: izletPanel.on
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 9
-                    height: 9
-                    radius: 4.5
-                    color: izlet.state === "canli" ? Tema.danger : Tema.warm
-                }
-                Text {
-                    textFormat: Text.PlainText
-                    text: izlet.state === "canli"
-                          ? (izlet.viewers.length > 0 ? qsTr("Yayında · %1 izleyici").arg(izlet.viewers.length) : qsTr("Yayında · izleyici bekleniyor"))
-                          : qsTr("Yayın açılıyor…")
-                    font.family: Tema.body
-                    font.pixelSize: 15
-                    font.weight: Font.DemiBold
-                    color: Tema.text
-                }
-            }
-            Text {
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                visible: izletPanel.on
-                wrapMode: Text.WrapAnywhere
-                text: qsTr("İzleme adresi: %1").arg(izlet.watchUrl)
-                font.family: Tema.body
-                font.pixelSize: 13
-                color: Tema.faint
-            }
-            // Who watches: a name and "Çıkar"
-            Repeater {
-                model: izletPanel.on ? izlet.viewers : []
-                delegate: RowLayout {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    spacing: 10
-                    Ikon {
-                        Layout.preferredWidth: 18
-                        Layout.preferredHeight: 18
-                        name: "eye"
-                        color: Tema.muted
-                    }
-                    Text {
-                        textFormat: Text.PlainText
-                        Layout.fillWidth: true
-                        text: modelData.name
-                        elide: Text.ElideRight
-                        font.family: Tema.body
-                        font.pixelSize: 15
-                        color: Tema.text
-                    }
-                    OutlinePill {
-                        text: qsTr("Çıkar")
-                        glyph: "close"
-                        onClicked: izlet.kick(modelData.name)
-                    }
-                }
-            }
-            // The upload falls short: viewers' picture holds now and then (the server waits for a key frame)
-            Text {
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                visible: izletPanel.on && (izlet.struggling || izlet.lost > 0)
-                wrapMode: Text.WordWrap
-                text: izlet.struggling
-                      ? qsTr("İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor). Böyle sürerse oyun bozulmasın diye İzlet birkaç saniye içinde kendiliğinden durur. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.").arg((izlet.uploadKbps / 1000).toFixed(1))
-                      : qsTr("İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor): izleyicilerde görüntü bir an donabilir. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.").arg((izlet.uploadKbps / 1000).toFixed(1))
-                font.family: Tema.body
-                font.pixelSize: 13
-                lineHeight: 1.15
-                color: Tema.warm
-            }
-            Text {
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                visible: izlet.codec === "h265"
-                wrapMode: Text.WordWrap
-                text: qsTr("Bu yayın H.265: telefonda Safari ve güncel Chrome açar; bazı tarayıcılar (Firefox gibi) açamayabilir. Herkes izleyebilsin istersen PS5 bağlantı ayarlarından H.264'e geç (bir sonraki bağlantıda).")
-                font.family: Tema.body
-                font.pixelSize: 13
-                lineHeight: 1.15
-                color: Tema.faint
-            }
-            Text {
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                visible: izlet.error.length > 0
-                wrapMode: Text.WordWrap
-                text: izlet.error
-                font.family: Tema.body
-                font.pixelSize: 14
-                color: Tema.danger
-            }
-            Text {
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                visible: !izlet.available
-                wrapMode: Text.WordWrap
-                text: qsTr("Bu sürümde İzlet yok.")
-                font.family: Tema.body
-                font.pixelSize: 14
-                color: Tema.muted
-            }
-            Text {
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                visible: izlet.available && !izletPanel.on && !izlet.streaming
-                wrapMode: Text.WordWrap
-                text: qsTr("Yayın, PS5'te oynarken açılabilir.")
-                font.family: Tema.body
-                font.pixelSize: 14
-                color: Tema.muted
-            }
-            Item { Layout.fillHeight: true }
-            DrawerItem {
-                id: izletTellRow
-                visible: !izletPanel.on
-                text: qsTr("Arkadaşlarına haber ver")
-                glyph: "bell"
-                value: menu.izletTellFriends ? qsTr("Açık") : qsTr("Kapalı")
-                onClicked: menu.izletTellFriends = !menu.izletTellFriends
-            }
-            DrawerItem {
-                id: izletToggle
-                text: izletPanel.on ? qsTr("Yayını kapat") : qsTr("Yayını aç")
-                glyph: izletPanel.on ? "close" : "broadcast"
-                tone: izletPanel.on ? Tema.danger : Tema.text
-                enabled: izlet.available && (izletPanel.on || izlet.streaming)
-                onClicked: izletPanel.on ? izlet.stop() : izlet.start(menu.izletTellFriends)
-            }
-        }
-    }
-    readonly property Item izletFirst: izletToggle
 
     // ── The picture section: every picture setting of the engine ──
     FocusScope {

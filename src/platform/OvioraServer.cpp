@@ -2337,11 +2337,6 @@ void OvioraServer::takeEvent(const QJsonObject &e, bool announce)
 		// The new group in the list (and its members' keys for messages) at once
 		fetchGroups();
 	}
-	else if(type == "izlet")
-	{
-		title = tr("Canlı yayın");
-		text = tr("%1, %2 adlı PS5'inde oynadığını izletiyor: oviora.tr/izle.php").arg(eventField(e, "owner"), eventField(e, "console"));
-	}
 	else if(type == "kicked")
 	{
 		title = tr("Oturumdan çıkarıldın");

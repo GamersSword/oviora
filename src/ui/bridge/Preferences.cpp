@@ -676,7 +676,6 @@ QString QmlPlayerBridge::sourceTitle() const {
     const QString kind = sourceKind();
     if (kind.isEmpty()) return {};
     if (kind == QLatin1String("ps5")) {
-        if (impl_->connectionWatching) return impl_->connectionName;
         return tr("PS5 串流 · %1").arg(impl_->liveLabel);
     }
     return sourceName();

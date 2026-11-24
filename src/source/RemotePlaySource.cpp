@@ -123,7 +123,7 @@ bool RemotePlaySource::connect(const RemotePlayConnectDesc& desc)
         oviora::log::error("remoteplay", "connect refused: previous session did not stop successfully");
         return false;
     }
-    if (desc.request.video.validate() || (!desc.request.psn && !desc.request.watch && !remoteplay::validHost(desc.request.host))) {
+    if (desc.request.video.validate() || (!desc.request.psn && !remoteplay::validHost(desc.request.host))) {
         oviora::log::error("remoteplay", "connect rejected: invalid host or video profile");
         return false;
     }
@@ -136,7 +136,6 @@ bool RemotePlaySource::connect(const RemotePlayConnectDesc& desc)
     request_.credentials.registrationKey = desc.request.credentials.registrationKey;
     request_.credentials.sessionKey = desc.request.credentials.sessionKey;
     request_.psn = desc.request.psn;
-    request_.watch = desc.request.watch;
     decodeMode_=desc.decodeMode;decodeDevice_=desc.decodeDevice;hardwareFallback_=false;
     discardMedia_=desc.controlOnly;
 
@@ -612,7 +611,6 @@ void RemotePlaySource::close() noexcept
     audioNextSample_ = 0; audioRate_ = 0; wireSequence_.reset();
     request_.credentials = remoteplay::PairingCredentials{};
     request_.psn.reset();
-    request_.watch.reset();
     info_ = SourceInfo{};
 }
 

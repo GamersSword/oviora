@@ -348,7 +348,6 @@ struct QmlPlayerBridge::Impl {
     QVariantMap connection;
     QString connectionError;      // kept after a failed connection until the card is closed
     bool connectionPsn = false;   // the current/last connection goes over PSN
-    bool connectionWatching = false; // the current/last connection is watching an "İzlet" broadcast
     QString connectionName;       // the console's name for the connecting screen ("" = unknown)
     bool connectionSeen = false;  // a connection was opening or live in this attempt
     qint64 connectionStartMs = 0;

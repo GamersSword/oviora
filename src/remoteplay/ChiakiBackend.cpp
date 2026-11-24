@@ -3,9 +3,6 @@
 // Windows native initialization and source regression evidence: see execution log.
 #include "oviora/remoteplay/ChiakiBackend.h"
 #include "oviora/Log.h"
-#ifdef OVIORA_HAS_IZLET
-#include "WatchReceiver.h"
-#endif
 #include <format>
 #include <chiaki/session.h>
 #if !defined(CHIAKI_OVIORA_VIDEO_METADATA_API) || CHIAKI_OVIORA_VIDEO_METADATA_API != 1
@@ -186,12 +183,6 @@ struct ChiakiBackend::Impl {
     bool discardMedia=false;
     bool relayMedia=false;
     MediaRelayCallbacks mediaRelay;
-    std::atomic<bool> teeEnabled{false};
-    std::mutex teeMutex;
-    std::shared_ptr<const MediaRelayCallbacks> teeCallbacks;
-    std::vector<std::uint8_t> teeCodecConfig;
-    std::uint32_t teeConfigWidth=0,teeConfigHeight=0;
-    bool teeNeedsConfig=false;
     ChiakiAudioSink opusSink{};
     std::atomic<std::uint32_t> relayAudioChannels{2},relayAudioRate{48000},relayAudioFrameSize{480};
     // Only the upstream audio/Opus callback thread reads/writes these fields.
@@ -201,21 +192,6 @@ struct ChiakiBackend::Impl {
     ChiakiOrientationTracker orientation{};ChiakiAccelNewZero accelZero{};
     uint64_t lastMotion=0;
     std::mutex feedbackMutex;ControllerFeedback feedback;
-    // Watch mode ("İzle" WebRTC viewer): no Chiaki session, feeds video/Opus into the same pipeline.
-    bool isWatch=false;
-    std::shared_ptr<WatchRoute> watchRoute;
-#ifdef OVIORA_HAS_IZLET
-    std::unique_ptr<WatchReceiver> watchReceiver;
-#endif
-    std::mutex watchVideoMutex,watchAudioMutex,watchReasonMutex;
-    std::string watchEndReason;
-    std::vector<std::uint8_t> watchVps,watchSps,watchPps,watchLastConfig;
-
-    void setWatchReason(std::string reason) noexcept {
-        std::lock_guard lock(watchReasonMutex);
-        if(watchEndReason.empty()) watchEndReason=reason.empty()?std::string("Yayına bağlanılamadı."):std::move(reason);
-    }
-
     static bool videoTrace(){static const bool on=std::getenv("OVIORA_TEST_PS5_VIDEO_TRACE")!=nullptr;return on;}
     static void logCallback(ChiakiLogLevel level,const char* message,void* user) noexcept {
         auto& self=*static_cast<Impl*>(user);
@@ -341,124 +317,9 @@ struct ChiakiBackend::Impl {
                 ++videoCallbacks;
                 return true;
             }
-            if(!isWatch){
-                if(sample.kind==SampleKind::CodecConfig){
-                    std::shared_ptr<const MediaRelayCallbacks> teeCb;
-                    {
-                        std::lock_guard lock(teeMutex);
-                        teeCodecConfig.assign(bytes.begin(),bytes.end());
-                        teeConfigWidth=width;teeConfigHeight=height;
-                        teeNeedsConfig=false;
-                        if(teeEnabled.load(std::memory_order_relaxed))teeCb=teeCallbacks;
-                    }
-                    if(teeCb&&teeCb->onVideo){
-                        teeCb->onVideo(sample.kind,bytes,width,height,false,false);
-                    }
-                }else if(teeEnabled.load(std::memory_order_acquire)){
-                    std::shared_ptr<const MediaRelayCallbacks> teeCb;
-                    std::vector<std::uint8_t> pendingConfig;
-                    std::uint32_t cfgW=0,cfgH=0;
-                    {
-                        std::lock_guard lock(teeMutex);
-                        teeCb=teeCallbacks;
-                        if(teeCb&&teeCb->onVideo&&teeNeedsConfig&&!teeCodecConfig.empty()){
-                            pendingConfig=teeCodecConfig;cfgW=teeConfigWidth;cfgH=teeConfigHeight;
-                            teeNeedsConfig=false;
-                        }
-                    }
-                    if(teeCb&&teeCb->onVideo){
-                        if(!pendingConfig.empty()){
-                            teeCb->onVideo(SampleKind::CodecConfig,pendingConfig,cfgW,cfgH,false,false);
-                        }
-                        teeCb->onVideo(sample.kind,bytes,width,height,nal.idr,
-                            framesLost>0||referenceRecovered);
-                    }
-                }
-            }
             sample.payload=PaddedBytes::copy(bytes);++videoCallbacks;
             const bool accepted=token.video(std::move(sample));if(!accepted)++callbackRejected;return accepted;
         }catch(...){apiError=-1001;token.failed(-1001);return false;}
-    }
-    void handleWatchVideo(std::span<const std::uint8_t> annexB,HostTime arrival100ns) noexcept {
-        if(!active.load()||annexB.empty())return;
-        std::lock_guard lock(watchVideoMutex);
-        const bool isH264=profile.codec==Codec::H264;
-        std::vector<std::uint8_t> pictureBuf;
-        bool hasPicture=false,isIrap=false,configTouched=false;
-        auto matchStart=[](std::span<const std::uint8_t> b,std::size_t pos)->std::size_t{
-            if(pos+3<=b.size()&&b[pos]==0&&b[pos+1]==0){
-                if(b[pos+2]==1)return 3;
-                if(pos+4<=b.size()&&b[pos+2]==0&&b[pos+3]==1)return 4;
-            }
-            return 0;
-        };
-        struct NalSlice{std::size_t start,end;unsigned type;};
-        std::vector<NalSlice> nals;
-        std::size_t pos=0;
-        while(pos+3<=annexB.size()){
-            const std::size_t prefix=matchStart(annexB,pos);
-            if(!prefix){++pos;continue;}
-            const std::size_t hdr=pos+prefix;
-            if(hdr>=annexB.size()||(annexB[hdr]&0x80u)!=0){++callbackRejected;return;}
-            unsigned type=0;
-            if(isH264){
-                type=annexB[hdr]&31u;
-                if(type==0||type>23u){++callbackRejected;return;}
-            }else{
-                if(hdr+1>=annexB.size()||(annexB[hdr+1]&7u)==0){++callbackRejected;return;}
-                type=(annexB[hdr]>>1)&63u;
-            }
-            if(!nals.empty())nals.back().end=pos;
-            nals.push_back({pos,annexB.size(),type});
-            pos=hdr+(isH264?1u:2u);
-        }
-        if(nals.empty())return;
-        for(const auto& n:nals){
-            const auto slice=annexB.subspan(n.start,n.end-n.start);
-            if(isH264){
-                if(n.type==7u){watchSps.assign(slice.begin(),slice.end());configTouched=true;}
-                else if(n.type==8u){watchPps.assign(slice.begin(),slice.end());configTouched=true;}
-                else{
-                    pictureBuf.insert(pictureBuf.end(),slice.begin(),slice.end());
-                    if(n.type>=1u&&n.type<=5u)hasPicture=true;
-                }
-            }else{
-                if(n.type==32u){watchVps.assign(slice.begin(),slice.end());configTouched=true;}
-                else if(n.type==33u){watchSps.assign(slice.begin(),slice.end());configTouched=true;}
-                else if(n.type==34u){watchPps.assign(slice.begin(),slice.end());configTouched=true;}
-                else{
-                    pictureBuf.insert(pictureBuf.end(),slice.begin(),slice.end());
-                    if(n.type<=31u)hasPicture=true;
-                    if(n.type==19u||n.type==20u||n.type==21u)isIrap=true;
-                }
-            }
-        }
-        if(configTouched){
-            const bool ready=isH264?(!watchSps.empty()&&!watchPps.empty()):(!watchVps.empty()&&!watchSps.empty()&&!watchPps.empty());
-            if(ready){
-                std::vector<std::uint8_t> combined;
-                combined.reserve((isH264?0:watchVps.size())+watchSps.size()+watchPps.size());
-                if(!isH264)combined.insert(combined.end(),watchVps.begin(),watchVps.end());
-                combined.insert(combined.end(),watchSps.begin(),watchSps.end());
-                combined.insert(combined.end(),watchPps.begin(),watchPps.end());
-                if(combined!=watchLastConfig){
-                    watchLastConfig=combined;
-                    (void)pushVideoSample(SampleKind::CodecConfig,combined,profile.width,profile.height,
-                        arrival100ns,std::nullopt,0,false,false);
-                }
-            }
-        }
-        if(hasPicture&&!pictureBuf.empty()){
-            if(!connected.exchange(true)){setStage(ConnectStage::Connected);token.connected();}
-            (void)pushVideoSample(SampleKind::AccessUnit,pictureBuf,profile.width,profile.height,
-                arrival100ns,std::nullopt,0,false,isIrap);
-        }
-    }
-    void handleWatchAudio(std::span<const std::uint8_t> opusPacket) noexcept {
-        if(!active.load()||opusPacket.empty()||!opusInitialized||!opusSink.frame_cb)return;
-        std::lock_guard lock(watchAudioMutex);
-        if(!active.load())return;
-        opusSink.frame_cb(const_cast<std::uint8_t*>(opusPacket.data()),opusPacket.size(),opusSink.user);
     }
     static bool videoCallback(std::uint8_t* data,std::size_t size,
         const ChiakiOvioraVideoSampleInfo* info,void* user) noexcept {
@@ -509,20 +370,6 @@ struct ChiakiBackend::Impl {
     }
     static void desktopAudioFrame(std::uint8_t* data,std::size_t size,void* user) noexcept {
         auto& self=*static_cast<Impl*>(user);
-        if(self.active.load(std::memory_order_relaxed)&&self.teeEnabled.load(std::memory_order_acquire)){
-            try{
-                std::shared_ptr<const MediaRelayCallbacks> teeCb;
-                {std::lock_guard lock(self.teeMutex);teeCb=self.teeCallbacks;}
-                if(teeCb&&teeCb->onAudio){
-                    std::span<const std::uint8_t> packet;
-                    if(data&&size)packet={data,size};
-                    teeCb->onAudio(packet,
-                        self.relayAudioChannels.load(std::memory_order_relaxed),
-                        self.relayAudioRate.load(std::memory_order_relaxed),
-                        self.relayAudioFrameSize.load(std::memory_order_relaxed));
-                }
-            }catch(...){++self.errors;}
-        }
         if(self.opusSink.frame_cb)self.opusSink.frame_cb(data,size,self.opusSink.user);
     }
     static void opusSettings(std::uint32_t channels,std::uint32_t rate,void* user) noexcept {
@@ -562,40 +409,7 @@ ChiakiBackend::~ChiakiBackend(){
 }
 BackendResult ChiakiBackend::start(const NativeConnectRequest& request,SessionInbox::Token token,bool discardMedia,MediaRelayCallbacks relay){
     if(p_)return {false,-1100,"already_initialized"};
-    if((!request.psn&&!request.watch&&!validHost(request.host))||request.video.validate()||token.generation()==0)return {false,-1101,"validate_connect"};
-    if(request.watch){
-#ifndef OVIORA_HAS_IZLET
-        (void)discardMedia;(void)relay;
-        return {false,-1115,"watch_unavailable"};
-#else
-        p_=std::make_unique<Impl>(std::move(token));auto& s=*p_;s.profile=request.video;
-        s.isWatch=true;s.watchRoute=request.watch;
-        chiaki_log_init(&s.log,CHIAKI_LOG_WARNING|CHIAKI_LOG_ERROR,Impl::logCallback,&s);
-        chiaki_opus_decoder_init(&s.opus,&s.log);s.opusInitialized=true;
-        chiaki_opus_decoder_set_cb(&s.opus,Impl::opusSettings,Impl::opusFrame,&s);
-        chiaki_opus_decoder_get_sink(&s.opus,&s.opusSink);
-        ChiakiAudioHeader hdr{};chiaki_audio_header_set(&hdr,2,16,48000,2880);
-        if(s.opusSink.header_cb)s.opusSink.header_cb(&hdr,s.opusSink.user);
-        g_cantDisplay=false;setStage(ConnectStage::Opening);
-        s.active=true;s.started=true;
-        s.watchReceiver=std::make_unique<WatchReceiver>();
-        WatchReceiver::Callbacks cbs;
-        cbs.onVideo=[&s](std::span<const std::uint8_t> annexB,HostTime arrival100ns){s.handleWatchVideo(annexB,arrival100ns);};
-        cbs.onAudio=[&s](std::span<const std::uint8_t> opusPacket){s.handleWatchAudio(opusPacket);};
-        cbs.onFailed=[&s](std::string reason){
-            s.connected=false;setStage(ConnectStage::Idle);s.setWatchReason(std::move(reason));
-            s.token.failed(-1117);
-        };
-        if(!s.watchReceiver->start(s.watchRoute,std::move(cbs))){
-            s.setWatchReason("Yayına bağlanılamadı.");
-            s.active=false;s.started=false;s.token.failed(-1116);
-            (void)stop();
-            return {false,-1116,"watch_start"};
-        }
-        lastWatchEndReason_.clear();
-        return {true,0,"watch_start"};
-#endif
-    }
+    if((!request.psn&&!validHost(request.host))||request.video.validate()||token.generation()==0)return {false,-1101,"validate_connect"};
     auto init=initializeChiaki();if(!init.ok)return init;
     p_=std::make_unique<Impl>(std::move(token));auto& s=*p_;s.host=request.psn?std::string():request.host;s.profile=request.video;
     s.relayMedia=bool(relay.onVideo)||bool(relay.onAudio);
@@ -701,32 +515,11 @@ BackendResult ChiakiBackend::start(const NativeConnectRequest& request,SessionIn
     {std::lock_guard lock(g_keyboardMutex);g_keyboard={};}
     return s.record(startCode,"chiaki_session_start");
 }
-void ChiakiBackend::setMediaTee(MediaRelayCallbacks tee){
-    if(!p_||p_->isWatch)return;
-    auto& s=*p_;
-    const bool enable=bool(tee.onVideo)||bool(tee.onAudio);
-    std::shared_ptr<const MediaRelayCallbacks> next;
-    if(enable)next=std::make_shared<MediaRelayCallbacks>(std::move(tee));
-    std::lock_guard lock(s.teeMutex);
-    s.teeCallbacks=std::move(next);
-    s.teeNeedsConfig=enable;
-    s.teeEnabled.store(enable,std::memory_order_release);
-}
 BackendResult ChiakiBackend::stop(){
     if(!p_)return {true,0,"already_stopped"};
     auto& s=*p_;
     if(!s.onOwner())return {false,-1102,"wrong_owner_thread"};
-    if(s.isWatch){
-        s.active=false;setStage(ConnectStage::Idle);g_cantDisplay=false;
-#ifdef OVIORA_HAS_IZLET
-        if(s.watchReceiver){s.watchReceiver->stop();s.watchReceiver.reset();}
-#endif
-        if(s.opusInitialized){chiaki_opus_decoder_fini(&s.opus);s.opusInitialized=false;}
-        s.started=false;s.connected=false;
-        {std::lock_guard lock(s.watchReasonMutex);lastWatchEndReason_=s.watchEndReason;}
-        p_.reset();return {true,0,"watch_stop"};
-    }
-    s.active=false;s.teeEnabled.store(false,std::memory_order_release);setStage(ConnectStage::Idle);g_cantDisplay=false;
+    s.active=false;setStage(ConnectStage::Idle);g_cantDisplay=false;
     {std::lock_guard lock(g_keyboardSessionMutex);if(g_keyboardSession==&s.session)g_keyboardSession=nullptr;}
     {std::lock_guard lock(g_keyboardMutex);g_keyboard.open=false;++g_keyboard.revision;}
     ChiakiErrorCode stopResult=CHIAKI_ERR_SUCCESS;
@@ -743,7 +536,6 @@ BackendResult ChiakiBackend::stop(){
     }
     if(s.opusInitialized){chiaki_opus_decoder_fini(&s.opus);s.opusInitialized=false;}
     if(s.micInitialized){chiaki_opus_encoder_fini(&s.mic);s.micInitialized=false;s.micReady=false;}
-    {std::lock_guard lock(s.teeMutex);s.teeCallbacks.reset();s.teeCodecConfig.clear();}
     // The session thread has ended: nothing uses the PSN session anymore.
     ChiakiHolepunchSession hp=s.holepunch;s.holepunch=nullptr;
     if(s.initialized){s.session.holepunch_session=nullptr;chiaki_session_fini(&s.session);s.initialized=false;}
@@ -753,22 +545,14 @@ BackendResult ChiakiBackend::stop(){
 }
 BackendResult ChiakiBackend::requestIdr(){
     if(!p_||!p_->onOwner()||!p_->started)return {false,-1103,"idr_without_session"};
-    if(p_->isWatch){
-#ifdef OVIORA_HAS_IZLET
-        if(p_->watchReceiver)p_->watchReceiver->requestKeyframe();
-#endif
-        return {true,0,"watch_pli"};
-    }
     return p_->record(chiaki_session_request_idr(&p_->session),"chiaki_session_request_idr");
 }
 BackendResult ChiakiBackend::gotoBed(){
     if(!p_||!p_->onOwner()||!p_->started||!p_->connected)return {false,-1107,"goto_bed_without_session"};
-    if(p_->isWatch)return {true,0,"watch_noop"};
     return p_->record(chiaki_session_goto_bed(&p_->session),"chiaki_session_goto_bed");
 }
 BackendResult ChiakiBackend::setMicrophone(bool on){
     if(!p_||!p_->onOwner()||!p_->started||!p_->connected)return {false,-1108,"microphone_without_session"};
-    if(p_->isWatch)return {true,0,"watch_noop"};
     auto& s=*p_;
     if(!s.micReady)return {false,-1109,"microphone_encoder"};
     if(on==s.micOn)return {true,0,"microphone_unchanged"};
@@ -784,7 +568,6 @@ BackendResult ChiakiBackend::setMicrophone(bool on){
 }
 BackendResult ChiakiBackend::submitMicrophone(const std::int16_t* pcm,std::size_t frames){
     if(!p_||!p_->onOwner()||!p_->started)return {false,-1112,"microphone_without_session"};
-    if(p_->isWatch)return {true,0,"watch_noop"};
     auto& s=*p_;
     if(!s.micOn||!s.micReady)return {true,0,"microphone_off"};
     if(!pcm||frames!=480)return {false,-1113,"microphone_block"};
@@ -794,13 +577,11 @@ BackendResult ChiakiBackend::submitMicrophone(const std::int16_t* pcm,std::size_
 }
 BackendResult ChiakiBackend::submitLoginPin(std::string_view pin){
     if(!p_||!p_->onOwner()||!p_->started)return {false,-1104,"pin_without_session"};
-    if(p_->isWatch)return {true,0,"watch_noop"};
     if(pin.empty()||pin.size()>8||!std::all_of(pin.begin(),pin.end(),[](char c){return c>='0'&&c<='9';}))return {false,-1105,"invalid_login_pin"};
     return p_->record(chiaki_session_set_login_pin(&p_->session,reinterpret_cast<const std::uint8_t*>(pin.data()),pin.size()),"chiaki_session_set_login_pin");
 }
 BackendResult ChiakiBackend::submitController(const ControllerState& state){
     if(!p_||!p_->onOwner()||!p_->started)return {false,-1106,"controller_without_session"};
-    if(p_->isWatch)return {true,0,"watch_noop"};
     ChiakiControllerState c;chiaki_controller_state_set_idle(&c);
     struct Mapping{std::uint32_t semantic;ChiakiControllerButton target;};
     static constexpr Mapping buttons[]={
@@ -830,15 +611,10 @@ BackendResult ChiakiBackend::submitController(const ControllerState& state){
     return p_->record(chiaki_session_set_controller_state(&p_->session,&c),"chiaki_session_set_controller_state");
 }
 ControllerFeedback ChiakiBackend::takeFeedback(){
-    if(!p_||!p_->onOwner()||p_->isWatch)return {};
+    if(!p_||!p_->onOwner())return {};
     std::lock_guard lock(p_->feedbackMutex);auto result=std::move(p_->feedback);p_->feedback={};
     if(result.motionReset)p_->lastMotion=0;
     return result;
-}
-std::string ChiakiBackend::watchEndReason()const{
-    if(!p_)return lastWatchEndReason_;
-    std::lock_guard lock(p_->watchReasonMutex);
-    return p_->watchEndReason.empty()?lastWatchEndReason_:p_->watchEndReason;
 }
 NativeSnapshot ChiakiBackend::snapshot()const{
     // Like start/stop, pointer ownership requires the owner; the atomic counters
@@ -857,10 +633,6 @@ NativeSnapshot ChiakiBackend::snapshot()const{
         const double mbps=sc.measured_bitrate;out.measuredMbps=std::isfinite(mbps)&&mbps>=0?mbps:0.0;
         // The console reports its round trip in microseconds (197 on a LAN with a 0.5 ms ping).
         const double rtt=sc.quality_rtt;out.consoleRttMs=sc.quality_reports&&std::isfinite(rtt)&&rtt>0?rtt/1000.0:-1.0;
-    }
-    if(s.isWatch){
-        out.automaticRetryAllowed=false;out.startupRetryAllowed=false;
-        return out;
     }
     // After a stopped session the PS5 may briefly still report RP_IN_USE.
     // Retrying this request cannot evict it; the console remains authoritative.

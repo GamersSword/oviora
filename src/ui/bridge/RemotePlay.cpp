@@ -1,7 +1,6 @@
 // QML bridge: RemotePlay responsibilities.
 #include "../QmlPlayerBridge_p.h"
 #include "oviora/remoteplay/ChiakiBackend.h"
-#include "oviora/remoteplay/WatchRoute.h"
 #include <QDateTime>
 
 namespace oviora::ui {
@@ -349,7 +348,7 @@ bool QmlPlayerBridge::ps5Connect() {
     const bool viewOnly = desc.request.viewOnly;
     flushPreferences();
     // A new attempt: the connecting screen starts over, an old error card goes
-    i.connectionPsn = overPsn; i.connectionWatching = false; i.connectionSeen = false; i.connectionError.clear();
+    i.connectionPsn = overPsn; i.connectionSeen = false; i.connectionError.clear();
     // The session id is cleared with the flag: the previous session's id left over here
     // ended "opening" on the next snapshot while the old source still ran.
     i.openingSource = true; i.openingSessionId = 0; i.sourceLabel = L"PS5 · " + std::wstring(host.begin(), host.end());
@@ -410,68 +409,6 @@ bool QmlPlayerBridge::connectPsn(std::shared_ptr<const void> route, const QStrin
     return ps5Connect();
 #else
     Q_UNUSED(route); Q_UNUSED(nickname);
-    return false;
-#endif
-}
-bool QmlPlayerBridge::connectWatch(std::shared_ptr<remoteplay::WatchRoute> route, const QString& title) {
-#if defined(OVIORA_ENABLE_REMOTEPLAY) && defined(OVIORA_HAS_IZLET)
-    if (!route) return false;
-    auto& i = *impl_;
-    if (i.ps5Busy) return false;
-    const QString codecLow = QString::fromStdString(route->codec).trimmed().toLower();
-    remoteplay::Codec watchCodec = remoteplay::Codec::H264;
-    if (codecLow == QLatin1String("h264")) {
-        watchCodec = remoteplay::Codec::H264;
-    } else if (codecLow == QLatin1String("h265") || codecLow == QLatin1String("hevc") || codecLow == QLatin1String("h265hdr")) {
-        watchCodec = remoteplay::Codec::H265;
-    } else {
-        oviora::log::warn("watch-ui", std::format("unsupported watch codec: {}", route->codec));
-        return false;
-    }
-    if (i.ps5Form.isEmpty()) ps5Load();
-    source::RemotePlayConnectDesc desc;
-    desc.request.video.width = 1920;
-    desc.request.video.height = 1080;
-    desc.request.video.fps = 60;
-    desc.request.video.bitrateKbps = 15000;
-    desc.request.video.codec = watchCodec;
-    desc.request.viewOnly = true;
-    desc.request.watch = std::move(route);
-    desc.smoothing = false;
-    const int decode = std::clamp(i.ps5Form.value("decode").toInt(), 0, 2);
-    desc.decodeMode = static_cast<source::RemotePlayConnectDesc::DecodeMode>(decode);
-    desc.highQualitySampling = i.ps5Form.value("sampling").toInt() == 1;
-    flushPreferences();
-
-    const QString displayTitle = title.trimmed().isEmpty() ? tr("Canlı Yayın") : title.trimmed();
-    i.connectionPsn = false;
-    i.connectionWatching = true;
-    i.connectionName = displayTitle;
-    i.connectionSeen = false;
-    i.connectionError.clear();
-    i.openingSource = true;
-    i.openingSessionId = 0;
-    i.sourceLabel = wideOf(displayTitle);
-    i.ps5Watching = false;
-
-    auto request = std::make_shared<source::RemotePlayConnectDesc>(std::move(desc));
-    openAfterCinema(tr("Yayına bağlanılıyor · %1").arg(displayTitle), [this, request] {
-        auto& j = *impl_;
-        if (j.preOpen) j.preOpen();
-        j.engine.previewView({});
-        j.engine.openRemotePlay(j.videoWindow, std::move(*request), j.options);
-        j.openingSessionId = j.engine.snapshot().sessionId;
-        refreshSubtitles({});
-        if (j.controllerTimer) j.controllerTimer->stop();
-        j.releasePad(Impl::PadPs5);
-    });
-    updateConnection();
-    oviora::log::info("watch-ui", std::format("connectWatch codec={} decode={} title={}",
-                                              watchCodec == remoteplay::Codec::H264 ? "h264" : "h265",
-                                              decode, displayTitle.toStdString()));
-    return true;
-#else
-    Q_UNUSED(route); Q_UNUSED(title);
     return false;
 #endif
 }
@@ -599,7 +536,6 @@ void QmlPlayerBridge::lanWake(const QString& key) {
     i.wakeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
     i.lanNext = {};
     for (const auto& v : lanConsoles()) if (v.toMap().value("key").toString() == key) i.connectionName = v.toMap().value("name").toString();
-    i.connectionWatching = false;
     i.connectionError.clear();
     emit navigate(QStringLiteral("min"));
     updateConnection();
@@ -942,9 +878,8 @@ void QmlPlayerBridge::updateConnection() {
     m["stage"] = stage;
     m["detail"] = detail;
     m["psn"] = i.connectionPsn;
-    m["watching"] = i.connectionWatching && !stage.isEmpty();
     m["console"] = i.connectionName;
-    // The stream's codec as asked of the PS5 (İzlet passes the picture on as it is)
+    // The stream's codec as asked of the PS5
     m["codec"] = s.remoteStream.requestedProfile.codec == remoteplay::Codec::H264 ? QStringLiteral("h264") : QStringLiteral("h265");
     // The old screen's "this can take a few minutes" note: after 25 s of connecting
     m["slow"] = !stage.isEmpty() && stage != QLatin1String("live") && stage != QLatin1String("failed") && now - i.connectionStartMs > 25000;

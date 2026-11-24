@@ -420,15 +420,6 @@ if(OVIORA_FFMPEG_ROOT AND EXISTS "${OVIORA_FFMPEG_ROOT}/include/libavformat/avfo
   target_link_libraries(oviora_sources PUBLIC oviora_pipeline oviora_media oviora_base)
   target_link_libraries(oviora_sources PRIVATE ${FFMPEG_LIBRARIES} ole32 oleaut32 d3d12 dxgi d3d11)
 
-  option(OVIORA_IZLET "Enable Izlet broadcast publisher and watch receiver (libdatachannel)" ON)
-  if(OVIORA_IZLET)
-    find_package(LibDataChannel CONFIG QUIET)
-    find_package(nlohmann_json CONFIG QUIET)
-    if(NOT LibDataChannel_FOUND)
-      message(STATUS "OVIORA_IZLET: LibDataChannel not found; disabling OVIORA_IZLET")
-      set(OVIORA_IZLET OFF CACHE BOOL "Enable Izlet broadcast publisher and watch receiver (libdatachannel)" FORCE)
-    endif()
-  endif()
   if(OVIORA_ENABLE_REMOTEPLAY)
     set(OVIORA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
     include(cmake/OvioraRemotePlay.cmake)
@@ -585,8 +576,6 @@ if(OVIORA_BUILD_QML_UI AND Qt6_FOUND)
     src/platform/MessageCenter.cpp include/oviora/platform/MessageCenter.h
     src/platform/DiscordPresence.cpp include/oviora/platform/DiscordPresence.h
     src/platform/SubtitleScreen.cpp include/oviora/platform/SubtitleScreen.h
-    src/platform/IzletPublisher.cpp include/oviora/platform/IzletPublisher.h
-    src/platform/IzletController.cpp include/oviora/platform/IzletController.h
     third_party/qrcodegen/qrcodegen.cpp)
   set_target_properties(oviora_platform PROPERTIES AUTOMOC ON)
   target_compile_features(oviora_platform PRIVATE cxx_std_20)
@@ -594,10 +583,6 @@ if(OVIORA_BUILD_QML_UI AND Qt6_FOUND)
   target_compile_definitions(oviora_platform PRIVATE NOMINMAX)
   if(OVIORA_PLATFORM_UPDATES)
     target_compile_definitions(oviora_platform PRIVATE OVIORA_PLATFORM_UPDATES)
-  endif()
-  if(OVIORA_IZLET AND TARGET LibDataChannel::LibDataChannel)
-    target_compile_definitions(oviora_platform PUBLIC OVIORA_HAS_IZLET=1)
-    target_link_libraries(oviora_platform PRIVATE LibDataChannel::LibDataChannel)
   endif()
   target_include_directories(oviora_platform PUBLIC include PRIVATE third_party/qrcodegen third_party/webview2/include)
   target_link_libraries(oviora_platform PUBLIC Qt6::Core Qt6::Gui Qt6::Quick Qt6::Widgets Qt6::Network Qt6::Concurrent
@@ -831,15 +816,4 @@ if(OVIORA_BUILD_GECIT)
   target_compile_features(oviora_gecit_tests PRIVATE cxx_std_20)
   target_link_libraries(oviora_gecit_tests PRIVATE oviora_gecit_core)
 
-  add_executable(oviora_izlet_test_pub
-    apps/oviora-gecit/izlet_test_pub.cpp
-    src/platform/IzletPublisher.cpp
-    include/oviora/platform/IzletPublisher.h
-  )
-  set_target_properties(oviora_izlet_test_pub PROPERTIES AUTOMOC ON)
-  oviora_apply_warnings(oviora_izlet_test_pub)
-  target_compile_options(oviora_izlet_test_pub PRIVATE /utf-8)
-  target_compile_features(oviora_izlet_test_pub PRIVATE cxx_std_20)
-  target_compile_definitions(oviora_izlet_test_pub PRIVATE OVIORA_HAS_IZLET=1 NOMINMAX)
-  target_link_libraries(oviora_izlet_test_pub PRIVATE oviora_gecit_core)
 endif()

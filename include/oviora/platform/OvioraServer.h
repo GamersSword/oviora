@@ -231,9 +231,6 @@ public:
 	QVariantMap components() const;
 	/** Downloads an optional component of the current release into the program folder */
 	Q_INVOKABLE void installComponent(const QString &id);
-	/** One api.php call with this account (İzlet, IzletController): done(reply, error) on this thread */
-	using ApiCallback = std::function<void(const QJsonObject &reply, const QString &error)>;
-	void apiCall(const QString &action, QJsonObject body, ApiCallback done) { post(action, std::move(body), std::move(done)); }
 	/** Starts Oviora again (a newly installed component is loaded at start) */
 	Q_INVOKABLE void restartApp();
 	/** The stream session ended (from the backend) */

@@ -137,18 +137,6 @@ void EngineController::remotePlayLoginPin(std::string pin){std::lock_guard lock(
 void EngineController::remotePlayGotoBed(){std::lock_guard lock(mutex_);if(activeRemote_)activeRemote_->gotoBed();}
 void EngineController::remotePlayMicrophone(bool on){std::lock_guard lock(mutex_);if(activeRemote_)activeRemote_->microphone(on);}
 void EngineController::remotePlayMicrophonePcm(std::vector<std::int16_t> block){std::lock_guard lock(mutex_);if(activeRemote_)activeRemote_->microphonePcm(std::move(block));}
-void EngineController::setRemotePlayMediaTee(remoteplay::MediaRelayCallbacks tee){
-    const bool enable=bool(tee.onVideo)||bool(tee.onAudio);
-    auto shared=enable?std::make_shared<const remoteplay::MediaRelayCallbacks>(tee):nullptr;
-    std::shared_ptr<source::RemotePlaySessionSource> remote;
-    {std::lock_guard lock(mutex_);remoteMediaTee_=std::move(shared);remote=activeRemote_;}
-    if(remote)remote->setMediaTee(std::move(tee));
-}
-void EngineController::requestRemotePlayIdr(){
-    std::shared_ptr<source::RemotePlaySessionSource> remote;
-    {std::lock_guard lock(mutex_);remote=activeRemote_;}
-    if(remote)remote->requestIdr();
-}
 #endif
 void EngineController::openTestFile(HWND window,const std::wstring& path){
     PlayerOptions opts;
@@ -292,11 +280,7 @@ void EngineController::run(HWND window,std::wstring path,PlayerOptions options,s
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     auto remote=remoteRequest?std::make_shared<source::RemotePlaySessionSource>():nullptr;
     const bool isRemote=bool(remote);
-    {
-        std::shared_ptr<const remoteplay::MediaRelayCallbacks> tee;
-        {std::lock_guard lock(mutex_);activeRemote_=remote;tee=remoteMediaTee_;}
-        if(remote&&tee)remote->setMediaTee(*tee);
-    }
+    {std::lock_guard lock(mutex_);activeRemote_=remote;}
 #else
     (void)remoteRequest;const bool isRemote=false;
 #endif

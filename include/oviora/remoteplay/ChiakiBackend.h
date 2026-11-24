@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "SessionInbox.h"
-#include "WatchRoute.h"
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -59,7 +58,6 @@ struct NativeConnectRequest {
     bool adaptiveResolution=false;
     PairingCredentials credentials;
     std::shared_ptr<const PsnRoute> psn; // Set: connect over PSN, host and credentials unused.
-    std::shared_ptr<WatchRoute> watch;   // Set: watch a friend's İzlet broadcast over WebRTC (no PS5 session).
 };
 struct NativeSnapshot {
     bool started=false,connected=false;
@@ -117,10 +115,6 @@ public:
     // packets are forwarded directly to the callbacks).
     BackendResult start(const NativeConnectRequest&,SessionInbox::Token,bool discardMedia=false,
         MediaRelayCallbacks relay={});
-    // Attaches or detaches a media tee listener while normal desktop decode/audio
-    // playback continues. Empty callbacks disable the tee (near-zero cost when off).
-    // Thread-safe; never invoke from inside a Chiaki callback.
-    void setMediaTee(MediaRelayCallbacks tee);
     BackendResult stop(); // Does not call PS5 goto_bed; must precede inbox.finishStop().
     BackendResult requestIdr();
     // Oviora: puts the PS5 into rest mode (the ctrl channel sends it; the console then ends
@@ -135,11 +129,9 @@ public:
     BackendResult submitLoginPin(std::string_view);
     NativeSnapshot snapshot() const;
     ControllerFeedback takeFeedback();
-    std::string watchEndReason() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> p_;
-    std::string lastWatchEndReason_;
 };
 struct PairResult {
     BackendResult result;

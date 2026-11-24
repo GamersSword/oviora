@@ -62,9 +62,7 @@ public:
     remoteplay::BackendResult submitMicrophone(const std::int16_t* pcm, std::size_t frames) { return backend_.submitMicrophone(pcm, frames); }
     remoteplay::ControllerFeedback takeFeedback(){return backend_.takeFeedback();}
     remoteplay::NativeSnapshot nativeSnapshot()const{return backend_.snapshot();} // session owner only
-    std::string watchEndReason()const{return backend_.watchEndReason();}
     remoteplay::BackendResult requestIdr() { return backend_.requestIdr(); }
-    void setMediaTee(remoteplay::MediaRelayCallbacks tee) { backend_.setMediaTee(std::move(tee)); }
     remoteplay::BackendResult disconnectTransportForTest(){return backend_.stop();}
     bool connected() const noexcept { return connected_; }
     remoteplay::SessionInbox::Snapshot sessionSnapshot() const;

@@ -29,7 +29,7 @@ Rectangle {
     // Bağlan pressed: the stream page shows at once, before the bridge reports the first stage; the
     // scene covers it from the first frame instead of the page's black
     property bool starting: false
-    onOnMinPageChanged: if (onMinPage && !oviora.hasSource && stage === "" && conn.watching !== true) { starting = true; startingMax.restart() }
+    onOnMinPageChanged: if (onMinPage && !oviora.hasSource && stage === "") { starting = true; startingMax.restart() }
     Timer { id: startingMax; interval: 3000; onTriggered: connecting.starting = false }
     // Connected: the scene's words and mark step back over the picture (the view stays opaque: the
     // game is a native window under a hole the view cuts, so a fading view showed black), then the

@@ -602,10 +602,9 @@ Window {
         }
     }
     // Bağlantıyı kes from the stream menu: the black hole takes the picture, then the session ends.
-    // Watching a friend's broadcast, without a picture or with reduced motion it simply ends.
+    // Without a picture or with reduced motion it simply ends.
     function disconnectWithHole() {
-        const watching = !!(oviora.connection && oviora.connection.watching)
-        if (Theme.reduced || watching || !oviora.hasSource || blackHole.running) {
+        if (Theme.reduced || !oviora.hasSource || blackHole.running) {
             if (streamMenuLoader.item) streamMenuLoader.item.hide()
             oviora.ps5Cancel()
             return
@@ -1446,7 +1445,7 @@ Window {
             const sm = root.ensureStreamMenu()
             sm.open()
             if (sec.indexOf("picture") === 0) sm.openPicture(sec.indexOf(":") > 0 ? sec.split(":")[1] : "quality")
-            else if (sec === "keys" || sec === "sound" || sec === "subs" || sec === "subsphone" || sec === "izlet" || sec === "settings") sm.section = sec
+            else if (sec === "keys" || sec === "sound" || sec === "subs" || sec === "subsphone" || sec === "settings") sm.section = sec
             else if (sec.indexOf("chat:#") === 0) sm.openGroupChat(parseInt(sec.substring(6)))
             else if (sec.indexOf("chat") === 0) sm.openChat(sec.indexOf(":") > 0 ? sec.substring(sec.indexOf(":") + 1) : "")
         }

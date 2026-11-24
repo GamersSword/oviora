@@ -86,10 +86,8 @@
 #include "oviora/platform/PsnAccountLookup.h"
 #include "oviora/platform/DiscordPresence.h"
 #include "oviora/platform/SubtitleScreen.h"
-#include "oviora/platform/IzletController.h"
 #include "oviora/ui/MenuBackdropStore.h"
 #include "oviora/remoteplay/ChiakiBackend.h"
-#include "oviora/remoteplay/WatchRoute.h"
 
 using namespace oviora;
 
@@ -997,36 +995,6 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     } else {
         subtitleScreen->resume();   // left on last time: phones find it again by themselves
     }
-    // İzlet (Ctrl+O > İzlet): the stream watched live by friends in the browser, through the server's web gateway
-    IzletController::Hooks izletHooks;
-#ifdef OVIORA_ENABLE_REMOTEPLAY
-    izletHooks.setTee = [&controller](oviora::remoteplay::MediaRelayCallbacks tee) { controller.setRemotePlayMediaTee(std::move(tee)); };
-    izletHooks.requestIdr = [&controller] { controller.requestRemotePlayIdr(); };
-    // Canlı yayınlar > İzle: a friend's broadcast in this app's own player
-    izletHooks.connectWatch = [&bridge](std::shared_ptr<oviora::remoteplay::WatchRoute> route, const QString& title) {
-        return bridge.connectWatch(std::move(route), title);
-    };
-    izletHooks.stopWatch = [&bridge] { bridge.ps5Cancel(); };
-#endif
-    auto* izlet = new IzletController(platform, std::move(izletHooks), &app);
-    engine.rootContext()->setContextProperty(QStringLiteral("izlet"), izlet);
-    {
-        auto sync = [izlet, &bridge] {
-            const QVariantMap c = bridge.connection();
-            const QString stage = c.value(QStringLiteral("stage")).toString();
-            const bool watching = c.value(QStringLiteral("watching")).toBool();
-            izlet->setWatchState(watching, stage);
-            izlet->setStream(!watching && (stage == QLatin1String("live") || stage == QLatin1String("retrying")),
-                             c.value(QStringLiteral("codec")).toString(),
-                             c.value(QStringLiteral("console")).toString());
-        };
-        if (QCoreApplication::arguments().contains(QStringLiteral("--test-izlet"))) {
-            izlet->showTest();
-        } else {
-            QObject::connect(&bridge, &ui::QmlPlayerBridge::connectionChanged, izlet, sync);
-            sync();
-        }
-    }
     auto* psnWeb = new PsnWebView(nullptr, &app);
     engine.rootContext()->setContextProperty(QStringLiteral("psnWeb"), psnWeb);
     // Oyun bilgisi: Sony's sign-in value goes from the page straight to the server, never through QML
@@ -1046,7 +1014,7 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
         auto* watch = new QTimer(&app);
         auto wasActive = std::make_shared<bool>(false);
         QObject::connect(watch, &QTimer::timeout, platform, [platform, &bridge, wasActive] {
-            const bool active = bridge.remotePlayActive() && !bridge.connection().value(QStringLiteral("watching")).toBool();
+            const bool active = bridge.remotePlayActive();
             if (platform->sessionState() == QLatin1String("playing") && !active && *wasActive) platform->sessionEnded();
             *wasActive = active || platform->sessionState() == QLatin1String("asking");
         });
@@ -1074,7 +1042,7 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
         auto update = [discord, platform, &bridge, startedMs, wasLive] {
             // Fast exit when idle and Remote Play is inactive so ps5Changed/lanChanged/accountChanged
             // do not build QVariantMaps unnecessarily.
-            const bool active = bridge.remotePlayActive() && !bridge.connection().value(QStringLiteral("watching")).toBool();
+            const bool active = bridge.remotePlayActive();
             if (!active && !*wasLive && *startedMs == 0) {
                 discord->setEnabled(bridge.preferences().value(QStringLiteral("discordPresence"), true).toBool());
                 discord->setIdle();
@@ -1212,7 +1180,6 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
     bool testWmMouse = false;
     bool testPadCapture = false;
     QString testVideo;
-    QString testIzleApi, testIzleToken, testIzleYid;
     for (int i = 1; i < args.size(); ++i) {
         const QString& a = args.at(i);
         const bool hasValue = i + 1 < args.size();
@@ -1262,10 +1229,6 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
             testOptions.insert(QStringLiteral("hole"), args.at(++i).toDouble());
         } else if (a == QLatin1String("--test-connect") && hasValue) {
             testConnect = args.at(++i);   // lan | psn: connect to my PS5 by itself (test runs)
-        } else if (a == QLatin1String("--test-izle-yerel") && i + 3 < args.size()) {
-            testIzleApi = args.at(++i);
-            testIzleToken = args.at(++i);
-            testIzleYid = args.at(++i);
         } else if (a == QLatin1String("--video-probe") && hasValue) {
             const QString mode = args.at(++i);
             if (mode == QLatin1String("hidden")) g_videoProbe = VideoProbeMode::Hidden;
@@ -1421,152 +1384,6 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
             }
         });
         poll->start(1000);
-    }
-    // --test-izle-yerel <apiUrl> <token> <yid>: test-only native viewer joining an İzlet broadcast.
-    if (!testIzleApi.isEmpty() && !testIzleToken.isEmpty() && !testIzleYid.isEmpty()) {
-        struct LocalWatchState {
-            QNetworkAccessManager net;
-            QString apiUrl;
-            QString token;
-            QString yid;
-            QString iid;
-            qint64 after = 0;
-            bool stopped = false;
-            bool polling = false;
-            std::shared_ptr<oviora::remoteplay::WatchRoute> route;
-        };
-        auto st = std::make_shared<LocalWatchState>();
-        st->apiUrl = testIzleApi;
-        st->token = testIzleToken;
-        st->yid = testIzleYid;
-
-        auto postApi = [st](const QString& action, QJsonObject body,
-                            std::function<void(const QJsonObject&, int, bool)> done) {
-            body.insert(QStringLiteral("a"), action);
-            body.insert(QStringLiteral("token"), st->token);
-            body.insert(QStringLiteral("client"), QStringLiteral("win:test"));
-            QNetworkRequest req{QUrl(st->apiUrl)};
-            req.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
-            req.setTransferTimeout(5000);
-            QNetworkReply* reply = st->net.post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-            QObject::connect(reply, &QNetworkReply::finished, &st->net, [reply, done = std::move(done)]() {
-                const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                const bool ok = (reply->error() == QNetworkReply::NoError && httpStatus >= 200 && httpStatus < 400);
-                const QByteArray raw = reply->readAll();
-                reply->deleteLater();
-                const QJsonDocument doc = QJsonDocument::fromJson(raw);
-                if (done) done(doc.isObject() ? doc.object() : QJsonObject{}, httpStatus, ok);
-            });
-        };
-
-        auto* pollTimer = new QTimer(&app);
-        pollTimer->setSingleShot(true);
-        auto runPoll = std::make_shared<std::function<void()>>();
-        *runPoll = [st, pollTimer, postApi, runPoll, &app]() {
-            if (st->stopped || st->polling || st->iid.isEmpty()) return;
-            st->polling = true;
-            postApi(QStringLiteral("izle_poll"),
-                    QJsonObject{{QStringLiteral("iid"), st->iid}, {QStringLiteral("after"), double(st->after)}},
-                    [st, pollTimer, runPoll](const QJsonObject& r, int httpStatus, bool ok) {
-                        st->polling = false;
-                        if (st->stopped) return;
-                        if (!ok) {
-                            if (httpStatus == 403 || httpStatus == 404 || httpStatus == 410) {
-                                st->stopped = true;
-                                if (st->route) st->route->setEnded("Yayın bitti.");
-                                return;
-                            }
-                            pollTimer->start(1000);
-                            return;
-                        }
-                        for (const auto& v : r.value(QStringLiteral("signals")).toArray()) {
-                            const QJsonObject sigData = v.toObject().value(QStringLiteral("data")).toObject();
-                            if (st->route && !sigData.isEmpty()) {
-                                st->route->pushRemote(QJsonDocument(sigData).toJson(QJsonDocument::Compact).toStdString());
-                            }
-                        }
-                        st->after = std::max<qint64>(st->after, qint64(r.value(QStringLiteral("last")).toDouble(double(st->after))));
-                        const QString state = r.value(QStringLiteral("state")).toString();
-                        if (state == QLatin1String("bitti") || state == QLatin1String("hata")) {
-                            QString err = r.value(QStringLiteral("error")).toString();
-                            if (err.isEmpty()) err = QStringLiteral("Yayın bitti.");
-                            oviora::log::info("test-izle-yerel", std::format("poll ended state={} reason={}",
-                                state.toStdString(), err.toStdString()));
-                            st->stopped = true;
-                            if (st->route) st->route->setEnded(err.toStdString());
-                            return;
-                        }
-                        pollTimer->start(state == QLatin1String("canli") ? 1500 : 50);
-                    });
-        };
-        QObject::connect(pollTimer, &QTimer::timeout, &app, [runPoll]() { (*runPoll)(); });
-
-        QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [st, pollTimer, postApi]() {
-            if (st->stopped) return;
-            st->stopped = true;
-            pollTimer->stop();
-            if (!st->iid.isEmpty()) {
-                postApi(QStringLiteral("izle_leave"), QJsonObject{{QStringLiteral("iid"), st->iid}}, nullptr);
-            }
-        });
-
-        QTimer::singleShot(300, &app, [&app, &bridge, st, postApi, runPoll]() {
-            oviora::log::info("test-izle-yerel", "joining broadcast");
-            postApi(QStringLiteral("izle_join"), QJsonObject{{QStringLiteral("yid"), st->yid}},
-                    [&app, &bridge, st, postApi, runPoll](const QJsonObject& r, int httpStatus, bool ok) {
-                        if (!ok || r.value(QStringLiteral("iid")).toString().isEmpty()) {
-                            oviora::log::error("test-izle-yerel", std::format("izle_join failed http={} err={}",
-                                httpStatus, r.value(QStringLiteral("error")).toString().toStdString()));
-                            return;
-                        }
-                        st->iid = r.value(QStringLiteral("iid")).toString();
-                        const QString codec = r.value(QStringLiteral("codec")).toString(QStringLiteral("h264"));
-                        const QString owner = r.value(QStringLiteral("owner")).toString();
-                        const QString console = r.value(QStringLiteral("console")).toString();
-                        const QString title = (!owner.isEmpty() && !console.isEmpty())
-                            ? QStringLiteral("%1 · %2").arg(owner, console)
-                            : (!owner.isEmpty() ? owner : QStringLiteral("Canlı Yayın"));
-
-                        auto route = std::make_shared<oviora::remoteplay::WatchRoute>();
-                        route->codec = codec.toStdString();
-                        for (const auto& iceItem : r.value(QStringLiteral("ice")).toArray()) {
-                            if (iceItem.isString()) {
-                                route->iceServers.push_back(iceItem.toString().toStdString());
-                            } else if (iceItem.isObject()) {
-                                const QJsonObject obj = iceItem.toObject();
-                                const QJsonValue urlsVal = obj.value(QStringLiteral("urls"));
-                                if (urlsVal.isString()) {
-                                    route->iceServers.push_back(urlsVal.toString().toStdString());
-                                } else if (urlsVal.isArray()) {
-                                    for (const auto& u : urlsVal.toArray()) {
-                                        if (u.isString()) route->iceServers.push_back(u.toString().toStdString());
-                                    }
-                                }
-                            }
-                        }
-                        std::weak_ptr<LocalWatchState> weakSt = st;
-                        route->sendSignal = [&app, weakSt, postApi](std::string json) {
-                            QMetaObject::invokeMethod(&app, [weakSt, postApi, json = std::move(json)]() {
-                                auto locked = weakSt.lock();
-                                if (!locked || locked->stopped || locked->iid.isEmpty()) return;
-                                const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json));
-                                if (!doc.isObject()) return;
-                                postApi(QStringLiteral("izle_signal"),
-                                        QJsonObject{{QStringLiteral("iid"), locked->iid}, {QStringLiteral("data"), doc.object()}},
-                                        nullptr);
-                            }, Qt::QueuedConnection);
-                        };
-                        st->route = route;
-                        oviora::log::info("test-izle-yerel", std::format("joined codec={} title={}",
-                            codec.toStdString(), title.toStdString()));
-                        if (!bridge.connectWatch(route, title)) {
-                            oviora::log::error("test-izle-yerel", "connectWatch returned false");
-                            st->stopped = true;
-                            return;
-                        }
-                        (*runPoll)();
-                    });
-        });
     }
     // --test-drag: a border drag of this window without the mouse. The window gets what the
     // system's sizing loop sends it (WM_ENTERSIZEMOVE, WM_SIZING with the moved edge, the new

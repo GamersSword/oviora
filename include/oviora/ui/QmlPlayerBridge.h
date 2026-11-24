@@ -39,7 +39,7 @@ class QWindow;
 class QJsonArray;
 class QJsonObject;
 struct tagRAWMOUSE;
-namespace oviora::remoteplay { struct ControllerState; struct WatchRoute; }
+namespace oviora::remoteplay { struct ControllerState; }
 namespace oviora::ui {
 
 
@@ -635,8 +635,6 @@ public:
     // Oviora: a PS5 over the internet (PSN hole punching), leased by the Oviora server.
     // route is a remoteplay::PsnRoute; the video settings are the PS5 dialog's ones.
     bool connectPsn(std::shared_ptr<const void> route, const QString& nickname);
-    // Oviora: watch a friend's "İzlet" broadcast inside the native player.
-    bool connectWatch(std::shared_ptr<remoteplay::WatchRoute> route, const QString& title);
     // A PS5 session is running or opening.
     bool remotePlayActive() const;
     // Oviora: PS5s paired on the home network are kept in the user's Oviora account. The app hands

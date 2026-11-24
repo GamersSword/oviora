@@ -30678,146 +30678,6 @@
    "de": "Wie oft der Bildschirm gelesen wird. Eine kürzere Zeit reagiert schneller, belastet aber den Prozessor. Standard 150 ms."
   },
   {
-   "zh": "İzlet",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "İzlet",
-   "en": "Watch party",
-   "de": "Zuschauen lassen"
-  },
-  {
-   "zh": "Yayında · %1",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Yayında · %1",
-   "en": "Live · %1",
-   "de": "Live · %1"
-  },
-  {
-   "zh": "Açılıyor",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Açılıyor",
-   "en": "Starting",
-   "de": "Startet"
-  },
-  {
-   "zh": "Oynadığını arkadaşların ve grup üyelerin tarayıcıdan canlı izlesin. Görüntü bir kez, yeniden sıkıştırılmadan Oviora sunucusuna gider; en çok 20 kişi izleyebilir. Kaydedilmez.",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Oynadığını arkadaşların ve grup üyelerin tarayıcıdan canlı izlesin. Görüntü bir kez, yeniden sıkıştırılmadan Oviora sunucusuna gider; en çok 20 kişi izleyebilir. Kaydedilmez.",
-   "en": "Let your friends and group members watch your game live in the browser. The picture goes to the Oviora server once, not re-encoded; up to 20 people can watch. Nothing is recorded.",
-   "de": "Lass deine Freunde und Gruppenmitglieder dein Spiel live im Browser ansehen. Das Bild geht einmal und ohne Neukodierung an den Oviora-Server; bis zu 20 Personen können zuschauen. Nichts wird aufgezeichnet."
-  },
-  {
-   "zh": "Yayında · %1 izleyici",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Yayında · %1 izleyici",
-   "en": "Live · %1 watching",
-   "de": "Live · %1 schauen zu"
-  },
-  {
-   "zh": "Yayında · izleyici bekleniyor",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Yayında · izleyici bekleniyor",
-   "en": "Live · waiting for viewers",
-   "de": "Live · warte auf Zuschauer"
-  },
-  {
-   "zh": "Yayın açılıyor…",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Yayın açılıyor…",
-   "en": "Starting the broadcast…",
-   "de": "Übertragung startet…"
-  },
-  {
-   "zh": "İzleme adresi: %1",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "İzleme adresi: %1",
-   "en": "Watch at: %1",
-   "de": "Zuschauen unter: %1"
-  },
-  {
-   "zh": "Bu yayın H.265: telefonda Safari ve güncel Chrome açar; bazı tarayıcılar (Firefox gibi) açamayabilir. Herkes izleyebilsin istersen PS5 bağlantı ayarlarından H.264'e geç (bir sonraki bağlantıda).",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Bu yayın H.265: telefonda Safari ve güncel Chrome açar; bazı tarayıcılar (Firefox gibi) açamayabilir. Herkes izleyebilsin istersen PS5 bağlantı ayarlarından H.264'e geç (bir sonraki bağlantıda).",
-   "en": "This broadcast is H.265: Safari and current Chrome open it on phones; some browsers (such as Firefox) may not. If you want everyone to be able to watch, switch to H.264 in the PS5 connection settings (takes effect on the next connection).",
-   "de": "Diese Übertragung ist H.265: Safari und aktuelles Chrome öffnen sie auf dem Handy; manche Browser (etwa Firefox) eventuell nicht. Sollen alle zuschauen können, stelle in den PS5-Verbindungseinstellungen auf H.264 um (ab der nächsten Verbindung)."
-  },
-  {
-   "zh": "Bu sürümde İzlet yok.",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Bu sürümde İzlet yok.",
-   "en": "Watch party is not available in this version.",
-   "de": "Zuschauen lassen gibt es in dieser Version nicht."
-  },
-  {
-   "zh": "Yayın, PS5'te oynarken açılabilir.",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Yayın, PS5'te oynarken açılabilir.",
-   "en": "You can start a broadcast while playing on the PS5.",
-   "de": "Eine Übertragung kannst du starten, während du auf der PS5 spielst."
-  },
-  {
-   "zh": "Arkadaşlarına haber ver",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Arkadaşlarına haber ver",
-   "en": "Tell your friends",
-   "de": "Freunden Bescheid geben"
-  },
-  {
-   "zh": "Yayını kapat",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Yayını kapat",
-   "en": "End broadcast",
-   "de": "Übertragung beenden"
-  },
-  {
-   "zh": "Yayını aç",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "Yayını aç",
-   "en": "Start broadcast",
-   "de": "Übertragung starten"
-  },
-  {
-   "zh": "Yayın sunucusuyla bağlantı koptu.",
-   "src": "src/platform/IzletController.cpp",
-   "tr": "Yayın sunucusuyla bağlantı koptu.",
-   "en": "The connection to the broadcast server was lost.",
-   "de": "Die Verbindung zum Übertragungsserver ist abgebrochen."
-  },
-  {
-   "zh": "Yayın başlatılamadı.",
-   "src": "src/platform/IzletController.cpp",
-   "tr": "Yayın başlatılamadı.",
-   "en": "The broadcast could not be started.",
-   "de": "Die Übertragung konnte nicht gestartet werden."
-  },
-  {
-   "zh": "Canlı yayın",
-   "src": "src/platform/OvioraServer.cpp",
-   "tr": "Canlı yayın",
-   "en": "Live broadcast",
-   "de": "Live-Übertragung"
-  },
-  {
-   "zh": "%1, %2 adlı PS5'inde oynadığını izletiyor: oviora.tr/izle.php",
-   "src": "src/platform/OvioraServer.cpp",
-   "tr": "%1, %2 adlı PS5'inde oynadığını izletiyor: oviora.tr/izle.php",
-   "en": "%1 is streaming their game on %2 for friends: oviora.tr/izle.php",
-   "de": "%1 überträgt das Spiel auf %2 live: oviora.tr/izle.php"
-  },
-  {
-   "zh": "Görüntü yayın sunucusuna ulaşmadı. Sunucuda UDP 50000-50100 açık mı (Windows güvenlik duvarı ve sağlayıcının paneli)?",
-   "src": "src/platform/IzletController.cpp",
-   "tr": "Görüntü yayın sunucusuna ulaşmadı. Sunucuda UDP 50000-50100 açık mı (Windows güvenlik duvarı ve sağlayıcının paneli)?",
-   "en": "The picture did not reach the broadcast server. Is UDP 50000-50100 open on the server (Windows firewall and the provider's panel)?",
-   "de": "Das Bild hat den Übertragungsserver nicht erreicht. Ist UDP 50000-50100 auf dem Server offen (Windows-Firewall und Anbieter-Panel)?"
-  },
-  {
-   "zh": "Canlı yayınlar",
-   "src": "qml/Oviora/OvioraHome.qml",
-   "tr": "Canlı yayınlar",
-   "en": "Live broadcasts",
-   "de": "Live-Übertragungen"
-  },
-  {
    "zh": "Listeye dön",
    "src": "qml/Oviora/OvioraHome.qml",
    "tr": "Listeye dön",
@@ -30825,32 +30685,11 @@
    "de": "Zurück zur Liste"
   },
   {
-   "zh": "● Canlı yayınlar (%1)",
-   "src": "qml/Oviora/OvioraHome.qml",
-   "tr": "● Canlı yayınlar (%1)",
-   "en": "● Live broadcasts (%1)",
-   "de": "● Live-Übertragungen (%1)"
-  },
-  {
-   "zh": "İzle",
-   "src": "qml/Oviora/OvioraHome.qml",
-   "tr": "İzle",
-   "en": "Watch",
-   "de": "Ansehen"
-  },
-  {
    "zh": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" uygulamanın içinde açar.",
    "src": "qml/Oviora/OvioraHome.qml",
    "tr": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" uygulamanın içinde açar.",
    "en": "Your friends and group members are streaming their games. \"Watch\" opens it inside the app.",
    "de": "Deine Freunde und Gruppenmitglieder übertragen ihr Spiel. „Ansehen“ öffnet es in der App."
-  },
-  {
-   "zh": "Bir arkadaşın",
-   "src": "qml/Oviora/OvioraHome.qml",
-   "tr": "Bir arkadaşın",
-   "en": "A friend",
-   "de": "Ein Freund"
   },
   {
    "zh": "İzleme açılamadı.",
@@ -30865,76 +30704,6 @@
    "tr": "İzleme penceresi açılamadı (0x%1).",
    "en": "The watch page could not be opened (0x%1).",
    "de": "Die Zuschauseite konnte nicht geöffnet werden (0x%1)."
-  },
-  {
-   "zh": "İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor): izleyicilerde görüntü bir an donabilir. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor): izleyicilerde görüntü bir an donabilir. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.",
-   "en": "Your internet upload is not enough for this broadcast (%1 Mbit/s going out, packets lost): viewers' picture may freeze for a moment. Lowering the bitrate in the PS5 connection settings fixes it.",
-   "de": "Dein Upload reicht für diese Übertragung nicht (%1 Mbit/s gehen raus, Pakete gehen verloren): Bei Zuschauern kann das Bild kurz einfrieren. Eine niedrigere Bitrate in den PS5-Verbindungseinstellungen behebt das."
-  },
-  {
-   "zh": "Arkadaşların ve grup üyelerin oynarken \"İzlet\"i açarsa burada görünür. İzlediğin yayın, PS5 oynar gibi bu uygulamanın oynatıcısında açılır.",
-   "src": "qml/Oviora/OvioraHome.qml",
-   "tr": "Arkadaşların ve grup üyelerin oynarken \"İzlet\"i açarsa burada görünür. İzlediğin yayın, PS5 oynar gibi bu uygulamanın oynatıcısında açılır.",
-   "en": "When your friends and group members turn on \"İzlet\" while playing, they show up here. The broadcast you watch opens in this app's player, just like playing a PS5.",
-   "de": "Wenn deine Freunde und Gruppenmitglieder beim Spielen „İzlet“ einschalten, erscheinen sie hier. Die Übertragung öffnet sich im Player dieser App, wie beim Spielen auf der PS5."
-  },
-  {
-   "zh": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" yayını bu uygulamanın oynatıcısında açar.",
-   "src": "qml/Oviora/OvioraHome.qml",
-   "tr": "Arkadaşların ve grup üyelerin oynadıklarını izletiyor. \"İzle\" yayını bu uygulamanın oynatıcısında açar.",
-   "en": "Your friends and group members are streaming their games. \"Watch\" opens it in this app's player.",
-   "de": "Deine Freunde und Gruppenmitglieder übertragen ihr Spiel. „Ansehen“ öffnet es im Player dieser App."
-  },
-  {
-   "zh": "Şu an açık yayın yok.",
-   "src": "qml/Oviora/OvioraHome.qml",
-   "tr": "Şu an açık yayın yok.",
-   "en": "No broadcasts right now.",
-   "de": "Gerade keine Übertragungen."
-  },
-  {
-   "zh": "İzlemeyi bitir",
-   "src": "qml/Oviora/StreamMenu.qml",
-   "tr": "İzlemeyi bitir",
-   "en": "Stop watching",
-   "de": "Zuschauen beenden"
-  },
-  {
-   "zh": "Yayın açılamadı.",
-   "src": "src/platform/IzletController.cpp",
-   "tr": "Yayın açılamadı.",
-   "en": "The broadcast could not be opened.",
-   "de": "Die Übertragung konnte nicht geöffnet werden."
-  },
-  {
-   "zh": "İzleme kapandı.",
-   "src": "src/platform/IzletController.cpp",
-   "tr": "İzleme kapandı.",
-   "en": "Watching ended.",
-   "de": "Zuschauen beendet."
-  },
-  {
-   "zh": "Yayın bitti.",
-   "src": "src/platform/IzletController.cpp",
-   "tr": "Yayın bitti.",
-   "en": "The broadcast has ended.",
-   "de": "Die Übertragung ist beendet."
-  },
-  {
-   "zh": "Canlı Yayın",
-   "src": "src/ui/bridge/RemotePlay.cpp",
-   "tr": "Canlı Yayın",
-   "en": "Live broadcast",
-   "de": "Live-Übertragung"
-  },
-  {
-   "zh": "Yayına bağlanılıyor · %1",
-   "src": "src/ui/bridge/RemotePlay.cpp",
-   "tr": "Yayına bağlanılıyor · %1",
-   "en": "Connecting to the broadcast · %1",
-   "de": "Verbindung zur Übertragung · %1"
   },
   {
    "zh": "Menü solda",

@@ -10,7 +10,6 @@ bool remoteRunning(const engine::PlayerSnapshot& s) { return s.remotePlay && s.r
 
 // --- rest mode ------------------------------------------------------------------------------------
 void QmlPlayerBridge::ps5Rest() {
-    if (impl_->connectionWatching) { ps5Cancel(); return; }
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     const auto s = impl_->engine.snapshot();
     if (!s.remotePlay || !s.running) { ps5Cancel(); return; }
@@ -261,7 +260,7 @@ QStringList QmlPlayerBridge::microphones() const {
     return impl_->micDevices;
 }
 void QmlPlayerBridge::toggleMicrophone() {
-    if (impl_->connectionWatching || !remoteRunning(impl_->snapshot)) return;
+    if (!remoteRunning(impl_->snapshot)) return;
     impl_->micWanted = !impl_->micWanted;
     oviora::log::info("remoteplay-mic", impl_->micWanted ? "turned on from the stream menu" : "turned off from the stream menu");
     emit micChanged();
@@ -271,7 +270,7 @@ void QmlPlayerBridge::tickStreamSession() {
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     auto& i = *impl_;
     const auto& s = i.snapshot;
-    const bool active = remoteRunning(s) && !i.connectionWatching;
+    const bool active = remoteRunning(s);
     // The choice lasts for one stream (a reconnect inside it keeps it); a new stream starts with
     // the microphone as Ses ve ağ says (old: startMicUnmuted, off by default)
     if (i.micSession && (!s.remotePlay || s.sessionId != i.micSession)) {

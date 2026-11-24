@@ -21,7 +21,7 @@
 #include "oviora/engine/DisplayStateService.h"
 #include "oviora/engine/SubtitleTap.h"
 namespace oviora::source { struct RemotePlayConnectDesc; class RemotePlaySessionSource; }
-namespace oviora::remoteplay { struct ControllerState;struct ControllerFeedback;struct MediaRelayCallbacks; }
+namespace oviora::remoteplay { struct ControllerState;struct ControllerFeedback; }
 namespace oviora::sink { struct RgbaImage; }
 namespace oviora::gfx { class D3D12DeviceContext; class CommandSlotRing; }
 namespace oviora::engine {
@@ -194,8 +194,6 @@ public:
     void remotePlayGotoBed();
     void remotePlayMicrophone(bool on);
     void remotePlayMicrophonePcm(std::vector<std::int16_t> block);
-    void setRemotePlayMediaTee(remoteplay::MediaRelayCallbacks tee);
-    void requestRemotePlayIdr();
 #endif
     void openTestFile(HWND, const std::wstring& path);
     void stop();
@@ -233,7 +231,6 @@ private:
     uint64_t presentationRevision_=1;
     std::shared_ptr<FrameFlowWindow> activeFlow_;
     std::shared_ptr<source::RemotePlaySessionSource> activeRemote_;
-    std::shared_ptr<const remoteplay::MediaRelayCallbacks> remoteMediaTee_;
     PreviewView previewView_;
     std::wstring savePath_;
     // Declared before worker_: it outlives the engine thread's presenters.
