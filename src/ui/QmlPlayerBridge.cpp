@@ -390,6 +390,14 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
         }
     });
     impl_->timer->start(16);
+    // The gamepad subsystem once, while the window comes up (ControllerInput::warmUp): ~1.3 s on this
+    // thread that froze the connecting screen when it ran at Bağlan
+    QTimer::singleShot(0, this, [this] {
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = impl_->controller.warmUp();
+        oviora::log::info("controller", std::format("gamepad subsystem ready={} in {} ms (at start, not at Bağlan)", ok,
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()));
+    });
     startGpuSampler();
     // Overlays that hook presentation get injected into this process when a D3D device
     // appears (Qt's at start, the engine's at open); see gfx/PresentationHooks.h for what

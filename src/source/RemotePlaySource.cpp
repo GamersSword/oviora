@@ -1,4 +1,5 @@
 #include "oviora/source/RemotePlaySource.h"
+#include "oviora/source/ConnectingPreview.h"
 
 #include "oviora/Log.h"
 #include "oviora/pipeline/ColorMetadata.h"
@@ -37,6 +38,48 @@ std::shared_ptr<AVFrame> cloneFrame(const AVFrame* frame)
     return std::shared_ptr<AVFrame>(clone, [](AVFrame* value) {
         av_frame_free(&value);
     });
+}
+
+// A ~480 px wide BGRA picture of a decoded frame for the connecting screen (ConnectingPreview): the
+// hardware frame copied to memory, every n-th sample, BT.709 limited range; 10-bit kept to 8 (it is
+// shown blurred). False when the frame cannot be read.
+bool connectingPreviewOf(const AVFrame& decoded)
+{
+    AVFrame* sw = av_frame_alloc();
+    if (!sw) return false;
+    struct Free { AVFrame* f; ~Free() { av_frame_free(&f); } } guard{sw};
+    const AVFrame* frame = &decoded;
+    if (decoded.format == AV_PIX_FMT_D3D12) {
+        if (av_hwframe_transfer_data(sw, &decoded, 0) < 0) return false;
+        frame = sw;
+    }
+    const bool p010 = frame->format == AV_PIX_FMT_P010;
+    if ((frame->format != AV_PIX_FMT_NV12 && !p010) || frame->width < 64 || frame->height < 36) return false;
+    const int step = std::max(1, frame->width / 480);
+    const int ow = frame->width / step, oh = frame->height / step;
+    std::vector<std::uint8_t> out(size_t(ow) * oh * 4);
+    auto sample = [&](int plane, int x, int y, int comp) -> int {
+        const std::uint8_t* row = frame->data[plane] + size_t(y) * frame->linesize[plane];
+        if (!p010) return row[x * (plane ? 2 : 1) + comp];
+        std::uint16_t v;
+        std::memcpy(&v, row + (x * (plane ? 2 : 1) + comp) * 2, 2);
+        return v >> 8;
+    };
+    for (int y = 0; y < oh; y++)
+        for (int x = 0; x < ow; x++) {
+            const int sx = x * step, sy = y * step;
+            const double Y = (sample(0, sx, sy, 0) - 16) * (255.0 / 219.0);
+            const double U = (sample(1, sx / 2, sy / 2, 0) - 128) * (255.0 / 224.0);
+            const double V = (sample(1, sx / 2, sy / 2, 1) - 128) * (255.0 / 224.0);
+            auto clamp8 = [](double v) { return std::uint8_t(std::clamp(v, 0.0, 255.0)); };
+            std::uint8_t* o = &out[(size_t(y) * ow + x) * 4];
+            o[0] = clamp8(Y + 1.8556 * U);
+            o[1] = clamp8(Y - 0.1873 * U - 0.4681 * V);
+            o[2] = clamp8(Y + 1.5748 * V);
+            o[3] = 255;
+        }
+    ConnectingPreview::instance().set(std::uint32_t(ow), std::uint32_t(oh), std::move(out));
+    return true;
 }
 
 pipeline::SourcePixelFormat pixelFormatFromFrame(const AVFrame& frame)
@@ -336,6 +379,24 @@ bool RemotePlaySource::drainDecoder(std::uint64_t sourceIndex, const pipeline::F
         }
 #endif
         inbox_->decoderBackend(hardware,hardwareFallback_);
+        // The connecting screen asks for a picture: one about every half second, from the sixth frame
+        // on (the stream's very first frames can be blank)
+        if (ConnectingPreview::instance().wanted() && sequence_ >= 6) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastPreview_ >= std::chrono::milliseconds(450)) {
+                lastPreview_ = now;
+                const bool made = connectingPreviewOf(*decoderFrame_);
+                if (made && !previewLogged_) {
+                    previewLogged_ = true;
+                    oviora::log::info("connecting-preview", std::format("first picture at frame {} ({} ms to read)", sequence_,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - now).count()));
+                }
+                if (!made && !previewFailedLogged_) {
+                    previewFailedLogged_ = true;
+                    oviora::log::info("connecting-preview", std::format("frame not readable format={}", decoderFrame_->format));
+                }
+            }
+        }
         packet.color.resource = nullptr;
         // The AU contract is one picture per input. Unknown/reused timestamps
         // are rejected above instead of fabricating timing for extra pictures.

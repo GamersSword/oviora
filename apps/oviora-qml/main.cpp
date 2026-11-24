@@ -1257,6 +1257,9 @@ static int runApplication(int argc, char** argv, QString& restartProgram, QStrin
             testOptions.insert(QStringLiteral("chat"), args.at(++i));
         } else if (a == QLatin1String("--test-drag") && hasValue) {
             testDrag = args.at(++i);      // e.g. right:300@20,bottom:-150@24,topleft:-200;-40@28 (border drags)
+        } else if (a == QLatin1String("--test-hole") && hasValue) {
+            // Bağlantıyı kes's black hole this many seconds into a stream, the window grabbed along the way
+            testOptions.insert(QStringLiteral("hole"), args.at(++i).toDouble());
         } else if (a == QLatin1String("--test-connect") && hasValue) {
             testConnect = args.at(++i);   // lan | psn: connect to my PS5 by itself (test runs)
         } else if (a == QLatin1String("--test-izle-yerel") && i + 3 < args.size()) {

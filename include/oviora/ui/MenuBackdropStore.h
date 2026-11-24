@@ -16,7 +16,7 @@ class MenuBackdropStore
 {
 public:
 	/** A region copy of the processed frame cut down to a small blurred RGB picture (~240 px wide); null when the format is unknown */
-	static QImage toSmall(const engine::SubtitleSample &sample);
+	static QImage toSmall(const engine::SubtitleSample &sample, int width = 240, bool blur = true);
 	static void set(const QImage &image);
 	static QImage get();
 };

@@ -1088,6 +1088,12 @@ public:
     // The stream menu opened: the engine writes the frame on screen as a small-quality JPEG in this app's
     // cache (not when a screenshot is being written); menuBackdrop names it once it is there
     Q_INVOKABLE void requestMenuBackdrop(double widthFraction = 0.45, bool leftEdge = false);
+    // The connecting screen: a picture of the PS5's stream straight from the decoder while the picture
+    // pipeline is still getting ready (source/ConnectingPreview.h), as menuBackdrop (blurred)
+    Q_INVOKABLE void requestConnectingPicture(bool on);
+    // One sharp picture of the stream (~960 px wide) for the leaving effect; snapshotReady(url), "" when
+    // none came within half a second
+    Q_INVOKABLE void captureSnapshot();
     // The menu closed: the frame is deleted and forgotten
     Q_INVOKABLE void clearMenuBackdrop();
     QString menuBackdrop() const;
@@ -1144,6 +1150,7 @@ signals:
     void subtitlesChanged();
     void subtitleTextChanged();
     void preferencesChanged();
+    void snapshotReady(const QString& url);
     void menuBackdropChanged();
     void colourLibraryChanged();
     // Emitted only when the underlying snapshot actually changed, so QML

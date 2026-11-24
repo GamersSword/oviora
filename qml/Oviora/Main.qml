@@ -223,6 +223,7 @@ Window {
             id: homePage
             pageId: "home"
             home: pages
+            onEnter: ovHome.enter()
             OvioraHome {
                 id: ovHome
                 anchors.fill: parent
@@ -596,8 +597,20 @@ Window {
             StreamMenu {
                 owner: root
                 onRequestFullscreen: root.toggleFullscreen()
+                onRequestDisconnect: root.disconnectWithHole()
             }
         }
+    }
+    // Bağlantıyı kes from the stream menu: the black hole takes the picture, then the session ends.
+    // Watching a friend's broadcast, without a picture or with reduced motion it simply ends.
+    function disconnectWithHole() {
+        const watching = !!(oviora.connection && oviora.connection.watching)
+        if (Theme.reduced || watching || !oviora.hasSource || blackHole.running) {
+            if (streamMenuLoader.item) streamMenuLoader.item.hide()
+            oviora.ps5Cancel()
+            return
+        }
+        blackHole.begin()
     }
     readonly property bool streamMenuShown: !!(streamMenuLoader.item && streamMenuLoader.item.shown)
     function ensureStreamMenu() {
@@ -1442,6 +1455,175 @@ Window {
     // or held hidden, for the present-timing comparison (G2.5).
     Timer { id: testFullTimer; interval: 1500; onTriggered: { root.toggleFullscreen(); if (root.test.fullBar === "hidden") root.fullControls = false } }
 
+    // --test-hole <s>: the black hole that many seconds into a stream; the window grabbed at a few moments
+    Timer {
+        id: testHole
+        property bool done: false
+        interval: (root.test.hole || 0) * 1000
+        running: (root.test.hole || 0) > 0 && oviora.hasSource && !done
+        onTriggered: { done = true; root.disconnectWithHole(); testHoleGrab.start() }
+    }
+    Timer {
+        id: testHoleGrab
+        property int n: 0
+        interval: 500
+        repeat: true
+        onTriggered: {
+            const k = n++
+            root.contentItem.grabToImage(r => r.saveToFile("C:/claude/inceleme/ekran/delik-" + k + ".png"))
+            oviora.logUi("test-hole", "grab " + k + " page=" + root.page + " shown=" + root.shownPage + " hole=" + blackHole.shown
+                + " t=" + blackHole.t.toFixed(2) + " lift=" + blackHole.lift.toFixed(2) + " source=" + oviora.hasSource + " active=" + (oviora.ps5.active === true)
+                + " stage=" + ((oviora.connection && oviora.connection.stage) || ""))
+            if (n > 14) stop()
+        }
+    }
+    // ── The black hole (Bağlantıyı kes): the last sharp picture of the game glides into a point while
+    // the dark closes in from the edges and a bright ring burns at the centre; the session ends
+    // underneath, then the dark lifts off the home, whose sections rise in. Transforms only: the
+    // interface may be drawn in software (no shader effects there). ──
+    Item {
+        id: blackHole
+        anchors.fill: parent
+        z: 950
+        visible: shown
+        property bool shown: false
+        property bool running: false
+        readonly property bool videoCover: visible
+        property string picture: ""
+        property real t: 0         // 0..1 the fall into the hole
+        property real lift: 0      // 0..1 the dark lifting off the home
+        function begin() {
+            running = true
+            picture = ""
+            t = 0
+            lift = 0
+            oviora.captureSnapshot()
+            snapshotWait.restart()
+        }
+        function go(url) {
+            if (!running || shown) return
+            snapshotWait.stop()
+            picture = url
+            shown = true
+            if (streamMenuLoader.item) streamMenuLoader.item.hide()
+            fall.restart()
+        }
+        Connections {
+            target: oviora
+            function onSnapshotReady(url) { blackHole.go(url) }
+        }
+        // No picture within the moment: the effect plays on the dark alone
+        Timer { id: snapshotWait; interval: 600; onTriggered: blackHole.go("") }
+        MouseArea { anchors.fill: parent; enabled: blackHole.visible; acceptedButtons: Qt.AllButtons; hoverEnabled: true }
+
+        // The dark (the home's own ground, not pure black): closes in as the picture falls, lifts off the home
+        Rectangle {
+            anchors.fill: parent
+            color: Tema.bg
+            opacity: Math.min(1, blackHole.t * 1.6) * (1 - blackHole.lift)
+        }
+        // The picture: glides into the centre without turning (as PS Portal leaves a stream), easing in
+        // and out, and fades over the last stretch
+        Image {
+            id: holePicture
+            anchors.centerIn: parent
+            width: parent.width
+            height: parent.height
+            source: blackHole.picture
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            cache: false
+            asynchronous: false
+            readonly property real e: blackHole.t < 0.5 ? 4 * Math.pow(blackHole.t, 3) : 1 - Math.pow(-2 * blackHole.t + 2, 3) / 2
+            scale: Math.max(0.001, 1 - 0.985 * e)
+            opacity: blackHole.t < 0.7 ? 1 : Math.max(0, 1 - (blackHole.t - 0.7) / 0.3)
+            // Its edges melt into the dark (no hard frame), and it darkens as it goes
+            readonly property real edge: Math.min(paintedWidth, paintedHeight) * 0.16
+            Item {
+                anchors.centerIn: parent
+                width: holePicture.paintedWidth
+                height: holePicture.paintedHeight
+                Rectangle {
+                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                    height: holePicture.edge
+                    gradient: Gradient { GradientStop { position: 0; color: "#ff000000" } GradientStop { position: 1; color: "#00000000" } }
+                }
+                Rectangle {
+                    anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+                    height: holePicture.edge
+                    gradient: Gradient { GradientStop { position: 0; color: "#00000000" } GradientStop { position: 1; color: "#ff000000" } }
+                }
+                Rectangle {
+                    anchors { top: parent.top; bottom: parent.bottom; left: parent.left }
+                    width: holePicture.edge
+                    gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: "#ff000000" } GradientStop { position: 1; color: "#00000000" } }
+                }
+                Rectangle {
+                    anchors { top: parent.top; bottom: parent.bottom; right: parent.right }
+                    width: holePicture.edge
+                    gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: "#00000000" } GradientStop { position: 1; color: "#ff000000" } }
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#000000"
+                    opacity: 0.55 * holePicture.e
+                }
+            }
+        }
+        // The event horizon: a ring that wakes at the centre, swallows the last of the picture and closes
+        Rectangle {
+            anchors.centerIn: parent
+            // Follows the picture: a third of its height as it sinks, waking only in the second half
+            readonly property real k: blackHole.t < 0.45 ? 0 : blackHole.t < 0.8 ? (blackHole.t - 0.45) / 0.35 : Math.max(0, 1 - (blackHole.t - 0.8) / 0.2)
+            width: Math.max(14, holePicture.paintedHeight * holePicture.scale * 0.36)
+            height: width
+            radius: width / 2
+            color: "#05040a"
+            border.width: 3 + 5 * k
+            border.color: Qt.rgba(0.66, 0.59, 1.0, 0.25 + 0.6 * k)
+            opacity: k * (1 - blackHole.lift)
+            Rectangle {
+                anchors.centerIn: parent
+                width: parent.width + 26 * parent.k
+                height: width
+                radius: width / 2
+                color: "transparent"
+                border.width: 2
+                border.color: Qt.rgba(1.0, 0.68, 0.18, 0.35 * parent.k)
+            }
+        }
+        SequentialAnimation {
+            id: fall
+            NumberAnimation { target: blackHole; property: "t"; from: 0; to: 0.75; duration: 712; easing.type: Easing.Linear }
+            // The picture is small by now: the session ends under the last of the fall, so the home is
+            // (nearly) ready when the picture is gone and the dark lifts at once
+            ScriptAction { script: { oviora.ps5Cancel(); homeWait.restart() } }
+            NumberAnimation { target: blackHole; property: "t"; from: 0.75; to: 1; duration: 238; easing.type: Easing.Linear }
+            ScriptAction { script: blackHole.picture = "" }
+        }
+        // The dark lifts once the home page is really there (the stream's end turns the page), or after 3 s
+        Timer {
+            id: homeWait
+            interval: 50
+            repeat: true
+            property int ticks: 0
+            onTriggered: {
+                ticks++
+                if (blackHole.t >= 1 && ((root.page === "home" && root.shownPage === "home" && !oviora.hasSource) || ticks > 60)) {
+                    stop()
+                    ticks = 0
+                    if (root.page === "home") ovHome.enter()
+                    lifting.restart()
+                }
+            }
+        }
+        SequentialAnimation {
+            id: lifting
+            NumberAnimation { target: blackHole; property: "lift"; from: 0; to: 1; duration: 520; easing.type: Easing.OutCubic }
+            ScriptAction { script: { blackHole.shown = false; blackHole.running = false; blackHole.t = 0; blackHole.lift = 0 } }
+        }
+    }
+
     // ── PS5 connection states: connecting screen, error card, login PIN, protected content ──
     ConnectingView {
         id: connectingView
@@ -1493,6 +1675,11 @@ Window {
         color: Tema.scrim
         visible: ((oviora.connection && oviora.connection.stage) || "") === "failed" && root.page !== "set"
         readonly property bool videoCover: visible
+        property real inT: 1
+        opacity: inT
+        scale: 0.97 + 0.03 * inT
+        onVisibleChanged: if (visible && !Theme.reduced) { inT = 0; errorIn.restart() }
+        NumberAnimation { id: errorIn; target: errorCard; property: "inT"; to: 1; duration: 420; easing.bezierCurve: Theme.springSoft }
         MouseArea { anchors.fill: parent; enabled: errorCard.visible; acceptedButtons: Qt.AllButtons; hoverEnabled: true }
         Shortcut {
             sequence: "Esc"
@@ -1589,7 +1776,15 @@ Window {
         color: Tema.scrim
         visible: ((oviora.connection && oviora.connection.stage) || "") === "pin"
         readonly property bool videoCover: visible
-        onVisibleChanged: if (visible) { pinField.text = ""; pinField.forceActiveFocus() }
+        property real inT: 1
+        opacity: inT
+        scale: 0.97 + 0.03 * inT
+        onVisibleChanged: if (visible) {
+            pinField.text = ""
+            pinField.forceActiveFocus()
+            if (!Theme.reduced) { inT = 0; pinIn.restart() }
+        }
+        NumberAnimation { id: pinIn; target: pinCard; property: "inT"; to: 1; duration: 420; easing.bezierCurve: Theme.springSoft }
         MouseArea { anchors.fill: parent; enabled: pinCard.visible; acceptedButtons: Qt.AllButtons; hoverEnabled: true }
         Shortcut {
             sequence: "Esc"
@@ -1708,6 +1903,8 @@ Window {
             if (dismissed) return
             dismissed = true
             splashFade.start()
+            // The home rises in behind the opening as it goes
+            if (root.page === "home") ovHome.enter()
         }
         onHomeReadyChanged: tryDismiss()
 
@@ -1763,13 +1960,10 @@ Window {
             interval: Theme.reduced ? 1200 : 3000
             onTriggered: splash.dismiss()
         }
-        NumberAnimation {
+        ParallelAnimation {
             id: splashFade
-            target: splash
-            property: "opacity"
-            to: 0
-            duration: Theme.d(350)
-            easing.type: Easing.InOutQuad
+            NumberAnimation { target: splash; property: "opacity"; to: 0; duration: Theme.d(520); easing.type: Easing.InOutCubic }
+            NumberAnimation { target: splash; property: "scale"; to: 1.05; duration: Theme.d(560); easing.type: Easing.OutCubic }
         }
     }
 }

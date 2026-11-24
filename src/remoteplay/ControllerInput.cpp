@@ -11,12 +11,18 @@
 #include <cstring>
 #include "oviora/Log.h"
 namespace oviora::remoteplay {
-bool ControllerInput::start(uint32_t preferredDevice){
-    preferredDevice_=preferredDevice;
+bool ControllerInput::warmUp(){
     if(initialized_)return true;
     // No SDL window is created. Our explicit foreground gate is authoritative.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
     initialized_=SDL_InitSubSystem(SDL_INIT_GAMEPAD);return initialized_;
+}
+bool ControllerInput::start(uint32_t preferredDevice){
+    preferredDevice_=preferredDevice;
+    return warmUp();
+}
+void ControllerInput::shutdown(){
+    if(initialized_){SDL_QuitSubSystem(SDL_INIT_GAMEPAD);initialized_=false;}
 }
 void ControllerInput::stop(){
     for(auto* pad:others_)SDL_CloseGamepad(pad);
@@ -25,7 +31,6 @@ void ControllerInput::stop(){
     if(audioInitialized_){SDL_QuitSubSystem(SDL_INIT_AUDIO);audioInitialized_=false;}hapticAttempted_=false;
     touchQueue_.clear();touchState_={};haveGyro_=haveAccel_=false;calibrating_=false;gyroBias_={};enumerateAt_=0;
     if(gamepad_){SDL_CloseGamepad(gamepad_);gamepad_=nullptr;}
-    if(initialized_){SDL_QuitSubSystem(SDL_INIT_GAMEPAD);initialized_=false;}
 }
 void ControllerInput::setFollowLastPressed(bool on){
     if(!on){for(auto* pad:others_)SDL_CloseGamepad(pad);others_.clear();}

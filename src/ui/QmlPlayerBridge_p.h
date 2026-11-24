@@ -319,6 +319,10 @@ struct QmlPlayerBridge::Impl {
     // The live backdrop: a small picture of the strip under the drawer, ~8 times a second while the menu is open
     // (engine backdropTap), handed to QML through the "oviora-menu" image provider
     QTimer* backdropLive = nullptr;
+    QTimer* connectingPicture = nullptr;
+    QTimer* snapshotPoll = nullptr;
+    int snapshotTries = 0;
+    std::uint64_t connectingPictureSerial = 0;
     quint64 backdropLiveSerial = 0;
     qint64 pendingBackdropDeadline=0;
     int backdropSerial=0;

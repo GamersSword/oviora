@@ -31026,6 +31026,20 @@
    "tr": "Sen: ",
    "en": "You: ",
    "de": "Du: "
+  },
+  {
+   "zh": "%1 ile bağlantı kuruldu",
+   "src": "qml/Oviora/ConnectingView.qml",
+   "tr": "%1 ile bağlantı kuruldu",
+   "en": "Connected to %1",
+   "de": "Mit %1 verbunden"
+  },
+  {
+   "zh": "PS5 ile bağlantı kuruldu",
+   "src": "qml/Oviora/ConnectingView.qml",
+   "tr": "PS5 ile bağlantı kuruldu",
+   "en": "Connected to the PS5",
+   "de": "Mit der PS5 verbunden"
   }
  ]
 }

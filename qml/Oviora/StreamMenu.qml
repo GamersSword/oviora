@@ -55,6 +55,8 @@ Item {
         oviora.clearMenuBackdrop()
     }
     signal requestFullscreen()
+    // Bağlantıyı kes: Main plays the leaving effect, then ends the session
+    signal requestDisconnect()
     // "game": the list; "picture": the view, quality and every picture setting; "sound": volume and microphone;
     // "subs": subtitles; "keys": keyboard and mouse keys; "chat": friends and messages
     property string section: "game"
@@ -988,10 +990,7 @@ Item {
                 text: menu.watching ? qsTr("İzlemeyi bitir") : qsTr("Bağlantıyı kes")
                 glyph: "close"
                 tone: Tema.danger
-                onClicked: {
-                    menu.hide()
-                    oviora.ps5Cancel()
-                }
+                onClicked: menu.requestDisconnect()
             }
         }
         }

@@ -26,13 +26,13 @@ uint8_t srgb(double x)
 }
 }
 
-QImage MenuBackdropStore::toSmall(const engine::SubtitleSample &s)
+QImage MenuBackdropStore::toSmall(const engine::SubtitleSample &s, int width, bool blur)
 {
 	if(s.width == 0 || s.height == 0 || s.pixels.size() < size_t(s.width) * s.height * s.bytesPerPixel)
 		return {};
 	// ~240 px wide: each output pixel the average of a 3 x 3 grid inside its block (point sampling aliased:
 	// bright game text turned into blocks), then a strong blur, so the picture scaled back up is a smooth glass
-	const uint32_t step = std::max<uint32_t>(1, s.width / 240);
+	const uint32_t step = std::max<uint32_t>(1, s.width / uint32_t(std::max(16, width)));
 	const int ow = int(s.width / step), oh = int(s.height / step);
 	if(ow < 2 || oh < 2)
 		return {};
@@ -106,7 +106,7 @@ QImage MenuBackdropStore::toSmall(const engine::SubtitleSample &s)
 				}
 			}
 	};
-	for(int i = 0; i < 3; i++)
+	for(int i = 0; blur && i < 3; i++)
 	{
 		pass(a, b, true);
 		pass(b, a, false);

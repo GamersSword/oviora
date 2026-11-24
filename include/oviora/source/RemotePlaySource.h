@@ -9,6 +9,7 @@
 #include "oviora/remoteplay/Timeline.h"
 #include "oviora/sink/AudioPcmSource.h"
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -81,6 +82,9 @@ public:
 
 private:
     friend struct RemotePlaySourceTestAccess;
+    // ConnectingPreview: when the last picture was made, and its failure logged once
+    std::chrono::steady_clock::time_point lastPreview_{};
+    bool previewFailedLogged_ = false, previewLogged_ = false;
     struct DecodedFrame {
         std::shared_ptr<AVFrame> frame;
         pipeline::FramePacket packet;

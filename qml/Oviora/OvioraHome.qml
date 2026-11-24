@@ -13,6 +13,8 @@ Pane {
     padding: 0
 
     // Oviora (new): what the old main window did for this page
+    // An animated switch to the home (and the opening's end): the sections rise in one after another
+    signal enter()
     signal requestSettings()
     signal requestManualHost()
     signal connectionStarted(var retryFn)
@@ -2145,6 +2147,7 @@ Pane {
 
     // ── Sign in / register ───────────────────────────────────────────────
     ColumnLayout {
+        id: signInColumn
         visible: !home.signedIn
         anchors.centerIn: parent
         width: Math.min(parent.width - 96, 460)
@@ -3742,4 +3745,9 @@ Pane {
             }
         }
     }
+
+    VRise { target: topBar; d: 0; page: home }
+    VRise { target: signInColumn; d: 2; page: home }
+    VRise { target: consoleScroll; d: 2; page: home }
+    VRise { target: friendScroll; d: 4; page: home }
 }

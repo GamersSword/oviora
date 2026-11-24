@@ -9,9 +9,14 @@ namespace oviora::remoteplay {
 // SDL calls stay on the Win32 UI owner, independently of GPU processing.
 class ControllerInput {
 public:
-    ~ControllerInput(){stop();}
+    ~ControllerInput(){stop();shutdown();}
+    // SDL's gamepad subsystem takes ~1.3 s to start (device enumeration), on this (the UI) thread:
+    // started once while the app opens and kept for the app's life, so Bağlan no longer froze the
+    // connecting screen for that long. start() only takes the pads then.
+    bool warmUp();
     bool start(uint32_t preferredDevice=0);
-    void stop(); // also turns follow mode off
+    void stop(); // the pads go, the subsystem stays (warmUp); also turns follow mode off
+    void shutdown();
     // 谁按键就用谁 (PS5 手柄控制): every pad is opened and the one whose button went
     // down last is the one read, so a streaming tool's virtual pad that appears
     // after a local pad still works. Off (default): the first pad found.
