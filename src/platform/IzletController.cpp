@@ -272,9 +272,6 @@ void IzletController::start(bool tellFriends)
 			return end(QStringLiteral("hata"), tr("Yayın başlatılamadı."));
 		if(hooks.setTee)
 			hooks.setTee(publisher->makeTeeCallbacks());
-		// The gateway's memory starts from a key frame: one now rather than waiting for the next
-		if(hooks.requestIdr)
-			hooks.requestIdr();
 		poll();
 	});
 }
@@ -306,10 +303,29 @@ void IzletController::poll()
 			list.append(v.toObject().toVariantMap());
 		const QJsonObject stats = r.value("stats").toObject();
 		kbps_ = stats.value("kbps").toInt();
-		if(stats.value("loss").toInt() > 0 && lost_ == 0)
-			oviora::log::info("izlet", std::format("upload losing packets ({} kbit/s up)", stats.value("in_kbps").toInt()));
-		lost_ = stats.value("loss").toInt();
+		const int newLost = stats.value("loss").toInt();
+		if(newLost > 0 && (lost_ == 0 || newLost - lost_ >= 25))
+			oviora::log::info("izlet", std::format("upload losing packets (loss={}, {} kbit/s up)",
+				newLost, stats.value("in_kbps").toInt()));
+		lost_ = newLost;
 		upload_kbps = stats.value("in_kbps").toInt();
+		// The gateway counts over 5 s: what came in (~1150-byte packets) against what was lost. A share that stays high
+		// means the upload cannot carry the stream, and the full line holds up the PS5's own traffic too: past 20 s
+		// the broadcast stops so the game keeps going
+		const double arrived = upload_kbps * 1000.0 * 5.0 / 8.0 / 1150.0;
+		const bool bad = newLost > 0 && newLost >= 0.03 * (arrived + newLost);
+		const qint64 now = QDateTime::currentMSecsSinceEpoch();
+		if(bad && bad_since == 0)
+			bad_since = now;
+		else if(!bad)
+			bad_since = 0;
+		if(bad_since != 0 && now - bad_since > 20000 && s == QLatin1String("canli"))
+		{
+			oviora::log::info("izlet", std::format("upload too small for the stream ({} kbit/s, loss={}): stopping to spare the game",
+				upload_kbps, newLost));
+			server->apiCall(QStringLiteral("izlet_stop"), QJsonObject{{"yid", yid}}, [](const QJsonObject &, const QString &) {});
+			return end(QStringLiteral("hata"), tr("İnternetinin yükleme hızı bu yayına yetmediği için İzlet durduruldu; oyun bozulmasın diye. PS5 bağlantı ayarlarında bit hızını ya da çözünürlüğü düşürüp yeniden açabilirsin."));
+		}
 		if(s == QLatin1String("bitti") || s == QLatin1String("hata"))
 			return end(s == QLatin1String("bitti") && r.value("error").toString().isEmpty() ? QString() : QStringLiteral("hata"),
 				r.value("error").toString());
@@ -351,6 +367,8 @@ void IzletController::end(const QString &state, const QString &error)
 	yid.clear();
 	viewers_.clear();
 	kbps_ = 0;
+	lost_ = 0;
+	bad_since = 0;
 	setState(state, error);
 }
 

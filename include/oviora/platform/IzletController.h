@@ -41,6 +41,8 @@ class IzletController : public QObject
 	Q_PROPERTY(int lost READ lost NOTIFY changed)
 	/** What this PC uploads to the server, kbit/s */
 	Q_PROPERTY(int uploadKbps READ uploadKbps NOTIFY changed)
+	/** The upload keeps losing a share of the video: shown as a warning, and the broadcast stops on its own if it lasts */
+	Q_PROPERTY(bool struggling READ struggling NOTIFY changed)
 	Q_PROPERTY(QString watchUrl READ watchUrl CONSTANT)
 	/** Friends' and group members' broadcasts on the air now: [{yid, owner, console, codec, since, viewers}] (own one left out) */
 	Q_PROPERTY(QVariantList live READ live NOTIFY liveChanged)
@@ -70,6 +72,7 @@ public:
 	int kbps() const { return kbps_; }
 	int lost() const { return lost_; }
 	int uploadKbps() const { return upload_kbps; }
+	bool struggling() const { return bad_since != 0; }
 	QString watchUrl() const;
 	QVariantList live() const { return live_; }
 	bool canWatch() const;
@@ -117,6 +120,8 @@ private:
 	QVariantList viewers_;
 	int kbps_ = 0;
 	int lost_ = 0, upload_kbps = 0;
+	/** Since when the upload has been losing too much (0: it is fine); past a limit the broadcast stops to spare the game */
+	qint64 bad_since = 0;
 	QVariantList live_;
 	QTimer live_timer;
 	bool live_asking = false;

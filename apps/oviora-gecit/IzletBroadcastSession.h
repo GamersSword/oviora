@@ -117,6 +117,7 @@ private:
     std::chrono::steady_clock::time_point lastIdrReq_{};
     bool hasIdrReq_ = false;
     bool pendingKontrolIdr_ = false;
+    unsigned consecutiveIdrReqs_ = 0;
 
     mutable std::mutex mediaMutex_;
     IzletGopBuffer gopBuffer_;

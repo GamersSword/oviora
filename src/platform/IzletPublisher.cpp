@@ -14,23 +14,41 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace oviora::platform {
 namespace {
 
 #ifdef OVIORA_HAS_IZLET
-constexpr std::size_t kMaxVideoQueueFrames = 120;
-constexpr std::size_t kMaxVideoQueueBytes = 4u * 1024u * 1024u;
+constexpr std::size_t kMaxVideoQueueFrames = 30;
+constexpr std::size_t kMaxVideoQueueBytes = 2u * 1024u * 1024u;
 constexpr std::size_t kMaxAudioQueuePackets = 100;
 constexpr std::size_t kMaxFreeVideoBuffers = 16;
 constexpr std::size_t kMaxFreeAudioBuffers = 16;
+constexpr double kPacingQuantumMs = 1.5;
+constexpr double kMinPaceBps = 4'000'000.0;
+constexpr double kMaxPaceBps = 60'000'000.0;
+constexpr double kDefaultEmaBps = 19'000'000.0;
+constexpr double kPaceHeadroom = 1.20;
+constexpr double kMaxBurstBytes = 4096.0;
 
 void initRtcLoggingOnce() {
     static std::once_flag once;
@@ -113,6 +131,94 @@ bool containsH265Irap(std::span<const std::uint8_t> b) noexcept {
     }
     return false;
 }
+
+class PrecisionSleepTimer {
+public:
+#ifdef _WIN32
+    PrecisionSleepTimer() {
+        handle_ = ::CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!handle_) {
+            handle_ = ::CreateWaitableTimerW(nullptr, TRUE, nullptr);
+        }
+    }
+    ~PrecisionSleepTimer() {
+        if (handle_) ::CloseHandle(handle_);
+    }
+    PrecisionSleepTimer(const PrecisionSleepTimer&) = delete;
+    PrecisionSleepTimer& operator=(const PrecisionSleepTimer&) = delete;
+
+    void waitMicroseconds(std::int64_t usec) const {
+        if (usec <= 0) return;
+        if (handle_) {
+            LARGE_INTEGER due{};
+            due.QuadPart = -(usec * 10LL);
+            if (::SetWaitableTimer(handle_, &due, 0, nullptr, nullptr, FALSE)) {
+                ::WaitForSingleObject(handle_, INFINITE);
+                return;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(usec));
+    }
+
+private:
+    HANDLE handle_ = nullptr;
+#else
+    void waitMicroseconds(std::int64_t usec) const {
+        if (usec > 0) std::this_thread::sleep_for(std::chrono::microseconds(usec));
+    }
+#endif
+};
+
+// Defers outgoing video RTP packet dispatch from Track::sendFrame to senderLoop so large
+// frames (especially IDRs) are paced evenly across ~1.5 ms quanta instead of micro-bursting
+// UDP sockets, while reading incoming RTCP RR fractionLost for AIMD rate capping.
+class IzletPacingHandler final : public rtc::MediaHandler {
+public:
+    struct State {
+        std::mutex mutex;
+        std::deque<rtc::message_ptr> packets;
+        rtc::message_callback send;
+        std::atomic<std::uint8_t> rrFractionLost{0};
+        std::atomic<std::uint64_t> rrSeq{0};
+    };
+
+    explicit IzletPacingHandler(std::shared_ptr<State> state) : state_(std::move(state)) {}
+
+    void incoming(rtc::message_vector& messages, const rtc::message_callback&) override {
+        if (!state_) return;
+        for (const auto& m : messages) {
+            if (!m || m->type != rtc::Message::Control) continue;
+            if (m->size() < rtc::RtcpRr::SizeWithReportBlocks(1)) continue;
+            const auto* rr = reinterpret_cast<const rtc::RtcpRr*>(m->data());
+            if (rr->header.payloadType() != 201 || rr->header.reportCount() < 1) continue;
+            if (const auto* rb = rr->getReportBlock(0)) {
+                state_->rrFractionLost.store(rb->getFractionLost(), std::memory_order_relaxed);
+                state_->rrSeq.fetch_add(1, std::memory_order_release);
+            }
+        }
+    }
+
+    void outgoing(rtc::message_vector& messages, const rtc::message_callback& send) override {
+        if (!state_) return;
+        rtc::message_vector passThrough;
+        {
+            std::lock_guard lock(state_->mutex);
+            state_->send = send;
+            for (auto& m : messages) {
+                if (!m) continue;
+                if (m->type == rtc::Message::Binary) {
+                    state_->packets.push_back(std::move(m));
+                } else {
+                    passThrough.push_back(std::move(m));
+                }
+            }
+        }
+        messages = std::move(passThrough);
+    }
+
+private:
+    std::shared_ptr<State> state_;
+};
 #endif
 
 } // namespace
@@ -140,6 +246,7 @@ struct IzletPublisher::Shared {
     std::shared_ptr<rtc::Track> videoTrack;
     std::shared_ptr<rtc::Track> audioTrack;
     std::shared_ptr<rtc::DataChannel> kontrolDc;
+    std::shared_ptr<IzletPacingHandler::State> pacingState;
     bool remoteAnswerApplied = false;
     std::vector<rtc::Candidate> pendingCandidates;
 
@@ -202,12 +309,16 @@ struct IzletPublisher::Shared {
         }
     }
 
-    void clearQueuesLocked() {
+    void clearVideoQueueLocked() {
         while (!videoQueue.empty()) {
             recycleVideoBuf(std::move(videoQueue.front().data));
             videoQueue.pop_front();
         }
         videoQueueBytes = 0;
+    }
+
+    void clearQueuesLocked() {
+        clearVideoQueueLocked();
         while (!audioQueue.empty()) {
             recycleAudioBuf(std::move(audioQueue.front().data));
             audioQueue.pop_front();
@@ -247,7 +358,7 @@ struct IzletPublisher::Shared {
         {
             std::lock_guard lock(idrMutex);
             const auto now = std::chrono::steady_clock::now();
-            if (hasIdrEmit && (now - lastIdrEmit) < std::chrono::milliseconds(500)) {
+            if (hasIdrEmit && (now - lastIdrEmit) < std::chrono::milliseconds(1500)) {
                 return;
             }
             hasIdrEmit = true;
@@ -284,39 +395,48 @@ struct IzletPublisher::Shared {
             (codec != oviora::remoteplay::Codec::H264 && containsH265Irap(annexB));
         const auto now = std::chrono::steady_clock::now();
 
-        std::lock_guard lock(queueMutex);
-        if (stopping.load(std::memory_order_relaxed)) return;
-        if (lostOrRecovered) waitingForIdr = true;
-        if (waitingForIdr && !effectiveIdr) return;
+        bool askIdr = false;
+        {
+            std::lock_guard lock(queueMutex);
+            if (stopping.load(std::memory_order_relaxed)) return;
+            if (lostOrRecovered) waitingForIdr = true;
+            if (waitingForIdr && !effectiveIdr) return;
 
-        const bool needConfig = effectiveIdr && !nal.hasConfig;
-        if (needConfig && cachedConfig.empty()) {
-            waitingForIdr = true;
-            return;
-        }
-        const std::size_t totalSize = (needConfig ? cachedConfig.size() : 0) + annexB.size();
-        if (totalSize > kMaxVideoQueueBytes) {
-            waitingForIdr = true;
-            return;
-        }
-        if (videoQueue.size() >= kMaxVideoQueueFrames || videoQueueBytes + totalSize > kMaxVideoQueueBytes) {
-            clearQueuesLocked();
-            if (!effectiveIdr) {
+            const bool needConfig = effectiveIdr && !nal.hasConfig;
+            if (needConfig && cachedConfig.empty()) {
                 waitingForIdr = true;
                 return;
             }
+            const std::size_t totalSize = (needConfig ? cachedConfig.size() : 0) + annexB.size();
+            if (totalSize > kMaxVideoQueueBytes) {
+                waitingForIdr = true;
+                return;
+            }
+            if (videoQueue.size() >= kMaxVideoQueueFrames || videoQueueBytes + totalSize > kMaxVideoQueueBytes) {
+                // Keep audio intact when shedding congested video backlog.
+                clearVideoQueueLocked();
+                if (!effectiveIdr) {
+                    waitingForIdr = true;
+                    askIdr = true;
+                }
+            }
+            if (!askIdr) {
+                rtc::binary buf = borrowVideoBuf(totalSize);
+                std::size_t off = 0;
+                if (needConfig) {
+                    std::memcpy(buf.data(), cachedConfig.data(), cachedConfig.size());
+                    off = cachedConfig.size();
+                }
+                std::memcpy(buf.data() + off, annexB.data(), annexB.size());
+                waitingForIdr = false;
+                videoQueueBytes += buf.size();
+                videoQueue.push_back(QueuedVideoFrame{std::move(buf), now, effectiveIdr});
+                queueCv.notify_one();
+            }
         }
-        rtc::binary buf = borrowVideoBuf(totalSize);
-        std::size_t off = 0;
-        if (needConfig) {
-            std::memcpy(buf.data(), cachedConfig.data(), cachedConfig.size());
-            off = cachedConfig.size();
+        if (askIdr) {
+            emitIdrRequest();
         }
-        std::memcpy(buf.data() + off, annexB.data(), annexB.size());
-        waitingForIdr = false;
-        videoQueueBytes += buf.size();
-        videoQueue.push_back(QueuedVideoFrame{std::move(buf), now, effectiveIdr});
-        queueCv.notify_one();
     }
 
     void enqueueAudio(std::span<const std::uint8_t> opusPacket, std::uint32_t frameSamples) {
@@ -342,51 +462,28 @@ struct IzletPublisher::Shared {
     }
 
     void senderLoop(const std::stop_token& stopToken) {
+        PrecisionSleepTimer sleepTimer;
         bool videoOriginSet = false;
         std::chrono::steady_clock::time_point videoOrigin{};
         std::uint64_t audioSamplesSent = 0;
 
-        while (!stopToken.stop_requested() && !stopping.load(std::memory_order_acquire)) {
-            std::deque<QueuedVideoFrame> vBatch;
-            std::deque<QueuedAudioPacket> aBatch;
-            {
-                std::unique_lock lock(queueMutex);
-                queueCv.wait(lock, [&] {
-                    return stopToken.stop_requested() || stopping.load(std::memory_order_relaxed) ||
-                           !videoQueue.empty() || !audioQueue.empty();
-                });
-                if (stopToken.stop_requested() || stopping.load(std::memory_order_relaxed)) break;
-                vBatch.swap(videoQueue);
-                videoQueueBytes = 0;
-                aBatch.swap(audioQueue);
-            }
+        std::deque<rtc::message_ptr> rtpQueue;
+        rtc::message_callback rtpSend;
+        std::shared_ptr<IzletPacingHandler::State> pState;
+        {
+            std::lock_guard pcLock(pcMutex);
+            pState = pacingState;
+        }
 
-            std::shared_ptr<rtc::Track> vTrack, aTrack;
-            {
-                std::lock_guard pcLock(pcMutex);
-                vTrack = videoTrack;
-                aTrack = audioTrack;
-            }
+        double emaBps = kDefaultEmaBps;
+        double aimdCapBps = kMaxPaceBps;
+        std::uint64_t lastRrSeq = 0;
+        auto rateWinStart = std::chrono::steady_clock::now();
+        std::size_t rateWinBytes = 0;
+        auto lastPaceTick = rateWinStart;
+        double bucketBytes = kMaxBurstBytes;
 
-            for (auto& vf : vBatch) {
-                if (stopToken.stop_requested() || stopping.load(std::memory_order_relaxed)) break;
-                if (vTrack && vTrack->isOpen() && !vf.data.empty()) {
-                    if (!videoOriginSet) {
-                        videoOrigin = vf.arrival;
-                        videoOriginSet = true;
-                    }
-                    const std::chrono::duration<double> elapsed =
-                        vf.arrival >= videoOrigin ? (vf.arrival - videoOrigin) : std::chrono::duration<double>::zero();
-                    try {
-                        vTrack->sendFrame(std::move(vf.data), elapsed);
-                    } catch (const std::exception&) {
-                    }
-                } else {
-                    std::lock_guard lock(queueMutex);
-                    recycleVideoBuf(std::move(vf.data));
-                }
-            }
-
+        auto sendAudioBatch = [&](std::deque<QueuedAudioPacket>& aBatch, const std::shared_ptr<rtc::Track>& aTrack) {
             for (auto& ap : aBatch) {
                 if (stopToken.stop_requested() || stopping.load(std::memory_order_relaxed)) break;
                 const std::uint32_t step = ap.frameSamples > 0 ? ap.frameSamples : 480u;
@@ -403,6 +500,145 @@ struct IzletPublisher::Shared {
                     recycleAudioBuf(std::move(ap.data));
                 }
             }
+        };
+
+        while (!stopToken.stop_requested() && !stopping.load(std::memory_order_acquire)) {
+            std::optional<QueuedVideoFrame> nextVideo;
+            std::deque<QueuedAudioPacket> aBatch;
+            const bool queueWasEmptyBeforeWait = rtpQueue.empty();
+            {
+                std::unique_lock lock(queueMutex);
+                if (rtpQueue.empty()) {
+                    queueCv.wait(lock, [&] {
+                        return stopToken.stop_requested() || stopping.load(std::memory_order_relaxed) ||
+                               !videoQueue.empty() || !audioQueue.empty();
+                    });
+                }
+                if (stopToken.stop_requested() || stopping.load(std::memory_order_relaxed)) break;
+                if (rtpQueue.empty() && !videoQueue.empty()) {
+                    nextVideo = std::move(videoQueue.front());
+                    videoQueueBytes = videoQueueBytes >= nextVideo->data.size()
+                        ? (videoQueueBytes - nextVideo->data.size()) : 0;
+                    videoQueue.pop_front();
+                }
+                if (!audioQueue.empty()) {
+                    aBatch.swap(audioQueue);
+                }
+            }
+
+            std::shared_ptr<rtc::Track> vTrack, aTrack;
+            {
+                std::lock_guard pcLock(pcMutex);
+                vTrack = videoTrack;
+                aTrack = audioTrack;
+                if (!pState) pState = pacingState;
+            }
+
+            if (!aBatch.empty()) {
+                sendAudioBatch(aBatch, aTrack);
+            }
+
+            if (pState) {
+                const std::uint64_t rrSeqNow = pState->rrSeq.load(std::memory_order_acquire);
+                if (rrSeqNow != lastRrSeq) {
+                    lastRrSeq = rrSeqNow;
+                    const double lossFrac = static_cast<double>(pState->rrFractionLost.load(std::memory_order_relaxed)) / 255.0;
+                    if (lossFrac >= 0.03) {
+                        const double curTarget = std::clamp(emaBps * kPaceHeadroom, kMinPaceBps, aimdCapBps);
+                        const double scale = std::clamp(1.0 - lossFrac * 0.5, 0.70, 0.90);
+                        aimdCapBps = std::max(kMinPaceBps, std::min(aimdCapBps, curTarget) * scale);
+                    } else if (lossFrac < 0.01) {
+                        aimdCapBps = std::min(kMaxPaceBps, aimdCapBps + 1'000'000.0);
+                    }
+                }
+            }
+
+            if (nextVideo) {
+                if (vTrack && vTrack->isOpen() && !nextVideo->data.empty()) {
+                    const auto now = std::chrono::steady_clock::now();
+                    rateWinBytes += nextVideo->data.size();
+                    const double winSec = std::chrono::duration<double>(now - rateWinStart).count();
+                    if (winSec > 0.80) {
+                        // Ignore long idle/IDR gaps so the bitrate estimator never collapses downward.
+                        rateWinStart = now;
+                        rateWinBytes = nextVideo->data.size();
+                    } else if (winSec >= 0.30) {
+                        const double sampleBps = (static_cast<double>(rateWinBytes) * 8.0) / winSec;
+                        emaBps = emaBps * 0.80 + std::clamp(sampleBps, 1'000'000.0, kMaxPaceBps) * 0.20;
+                        rateWinStart = now;
+                        rateWinBytes = 0;
+                    }
+                    if (!videoOriginSet) {
+                        videoOrigin = nextVideo->arrival;
+                        videoOriginSet = true;
+                    }
+                    const std::chrono::duration<double> elapsed =
+                        nextVideo->arrival >= videoOrigin ? (nextVideo->arrival - videoOrigin) : std::chrono::duration<double>::zero();
+                    try {
+                        vTrack->sendFrame(std::move(nextVideo->data), elapsed);
+                        if (pState) {
+                            std::lock_guard pLock(pState->mutex);
+                            while (!pState->packets.empty()) {
+                                rtpQueue.push_back(std::move(pState->packets.front()));
+                                pState->packets.pop_front();
+                            }
+                            if (pState->send) {
+                                rtpSend = pState->send;
+                            }
+                        }
+                    } catch (const std::exception&) {
+                    }
+                    if (queueWasEmptyBeforeWait) {
+                        const double idleGapMs = std::chrono::duration<double, std::milli>(now - lastPaceTick).count();
+                        if (idleGapMs > 5.0) {
+                            bucketBytes = std::min(bucketBytes, kMaxBurstBytes);
+                            lastPaceTick = now;
+                        }
+                    }
+                } else {
+                    std::lock_guard lock(queueMutex);
+                    recycleVideoBuf(std::move(nextVideo->data));
+                }
+            }
+
+            if (!rtpQueue.empty()) {
+                const auto now = std::chrono::steady_clock::now();
+                const double dtSec = std::clamp(std::chrono::duration<double>(now - lastPaceTick).count(), 0.0, 0.02);
+                lastPaceTick = now;
+                const double targetPaceBps = std::clamp(emaBps * kPaceHeadroom, kMinPaceBps, aimdCapBps);
+                const double bytesPerSec = targetPaceBps / 8.0;
+                bucketBytes = std::min(kMaxBurstBytes, bucketBytes + bytesPerSec * dtSec);
+
+                while (!rtpQueue.empty() && bucketBytes > 0.0) {
+                    auto msg = std::move(rtpQueue.front());
+                    rtpQueue.pop_front();
+                    if (!msg) continue;
+                    bucketBytes -= static_cast<double>(msg->size());
+                    if (rtpSend) {
+                        try {
+                            rtpSend(std::move(msg));
+                        } catch (const std::exception&) {
+                        }
+                    }
+                }
+
+                if (!rtpQueue.empty() && !stopToken.stop_requested() && !stopping.load(std::memory_order_relaxed)) {
+                    const double deficit = std::max(0.0, -bucketBytes);
+                    const double estUs = (deficit / bytesPerSec) * 1'000'000.0;
+                    const auto defaultUs = static_cast<std::int64_t>(std::llround(kPacingQuantumMs * 1000.0));
+                    const auto waitUs = std::clamp<std::int64_t>(
+                        static_cast<std::int64_t>(std::llround(estUs)) + 500, 1000, std::max<std::int64_t>(defaultUs, 2500));
+                    sleepTimer.waitMicroseconds(waitUs);
+                }
+            }
+        }
+
+        rtpQueue.clear();
+        rtpSend = {};
+        if (pState) {
+            std::lock_guard pLock(pState->mutex);
+            pState->packets.clear();
+            pState->send = {};
         }
     }
 #endif
@@ -471,6 +707,15 @@ bool IzletPublisher::start(const QString& codecStr,
         s.cachedConfig.clear();
         s.waitingForIdr = true;
         s.clearQueuesLocked();
+    }
+    {
+        std::lock_guard lock(s.idrMutex);
+        s.hasIdrEmit = false;
+    }
+    auto pState = std::make_shared<IzletPacingHandler::State>();
+    {
+        std::lock_guard pcLock(s.pcMutex);
+        s.pacingState = pState;
     }
 
     rtc::Configuration cfg;
@@ -541,15 +786,15 @@ bool IzletPublisher::start(const QString& codecStr,
                 rtc::NalUnit::Separator::StartSequence, videoRtpCfg);
         }
         auto vSr = std::make_shared<rtc::RtcpSrReporter>(videoRtpCfg);
-        auto vNack = std::make_shared<rtc::RtcpNackResponder>();
         auto vPli = std::make_shared<rtc::PliHandler>([weak]() {
             if (auto sp = weak.lock(); sp && !sp->stopping.load(std::memory_order_acquire)) {
                 sp->emitIdrRequest();
             }
         });
+        auto vPacing = std::make_shared<IzletPacingHandler>(pState);
         videoPacketizer->addToChain(vSr);
-        videoPacketizer->addToChain(vNack);
         videoPacketizer->addToChain(vPli);
+        videoPacketizer->addToChain(vPacing);
         videoTrack->setMediaHandler(videoPacketizer);
         videoTrack->onOpen([weak]() {
             if (auto sp = weak.lock(); sp && !sp->stopping.load(std::memory_order_acquire)) {
@@ -570,9 +815,7 @@ bool IzletPublisher::start(const QString& codecStr,
             kAudioSsrc, "oviora-izlet-audio", kAudioPt, rtc::OpusRtpPacketizer::DefaultClockRate);
         auto audioPacketizer = std::make_shared<rtc::OpusRtpPacketizer>(audioRtpCfg);
         auto aSr = std::make_shared<rtc::RtcpSrReporter>(audioRtpCfg);
-        auto aNack = std::make_shared<rtc::RtcpNackResponder>();
         audioPacketizer->addToChain(aSr);
-        audioPacketizer->addToChain(aNack);
         audioTrack->setMediaHandler(audioPacketizer);
         audioTrack->onOpen([weak]() {
             if (auto sp = weak.lock(); sp && !sp->stopping.load(std::memory_order_acquire)) {
@@ -722,14 +965,21 @@ void IzletPublisher::stop() {
     std::shared_ptr<rtc::DataChannel> dc;
     std::shared_ptr<rtc::Track> vt, at;
     std::shared_ptr<rtc::PeerConnection> pc;
+    std::shared_ptr<IzletPacingHandler::State> pState;
     {
         std::lock_guard pcLock(s.pcMutex);
         dc = std::move(s.kontrolDc);
         vt = std::move(s.videoTrack);
         at = std::move(s.audioTrack);
         pc = std::move(s.pc);
+        pState = std::move(s.pacingState);
         s.pendingCandidates.clear();
         s.remoteAnswerApplied = false;
+    }
+    if (pState) {
+        std::lock_guard pLock(pState->mutex);
+        pState->packets.clear();
+        pState->send = {};
     }
     if (dc) dc->resetCallbacks();
     if (vt) vt->resetCallbacks();

@@ -15,8 +15,55 @@
 #include <format>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace oviora::gecit {
 namespace {
+
+class GecitSleepTimer {
+public:
+#ifdef _WIN32
+    GecitSleepTimer() {
+        handle_ = ::CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!handle_) {
+            handle_ = ::CreateWaitableTimerW(nullptr, TRUE, nullptr);
+        }
+    }
+    ~GecitSleepTimer() {
+        if (handle_) ::CloseHandle(handle_);
+    }
+    GecitSleepTimer(const GecitSleepTimer&) = delete;
+    GecitSleepTimer& operator=(const GecitSleepTimer&) = delete;
+
+    void waitMicroseconds(std::int64_t usec) const {
+        if (usec <= 0) return;
+        if (handle_) {
+            LARGE_INTEGER due{};
+            due.QuadPart = -(usec * 10LL);
+            if (::SetWaitableTimer(handle_, &due, 0, nullptr, nullptr, FALSE)) {
+                ::WaitForSingleObject(handle_, INFINITE);
+                return;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(usec));
+    }
+
+private:
+    HANDLE handle_ = nullptr;
+#else
+    void waitMicroseconds(std::int64_t usec) const {
+        if (usec > 0) std::this_thread::sleep_for(std::chrono::microseconds(usec));
+    }
+#endif
+};
 
 constexpr std::size_t kMaxViewerVideoQueueFrames = 180;
 constexpr std::size_t kMaxViewerVideoQueueBytes = 4u * 1024u * 1024u;
@@ -266,7 +313,7 @@ public:
                     if (it->seq == seq) { missing_.erase(it); break; }
             }
         }
-        while (!missing_.empty() && now - missing_.front().at > std::chrono::milliseconds(100)) {
+        while (!missing_.empty() && now - missing_.front().at > std::chrono::milliseconds(150)) {
             missing_.erase(missing_.begin());
             ++lost;
         }
@@ -410,11 +457,17 @@ void IzletBroadcastSession::requestPublisherIdr() {
     {
         std::lock_guard lock(idrMutex_);
         const auto now = std::chrono::steady_clock::now();
-        if (hasIdrReq_ && (now - lastIdrReq_) < std::chrono::seconds(2)) {
+        const auto cooldown = (consecutiveIdrReqs_ == 0)
+            ? std::chrono::milliseconds(2000)
+            : (consecutiveIdrReqs_ == 1 ? std::chrono::milliseconds(4000) : std::chrono::milliseconds(6000));
+        if (hasIdrReq_ && (now - lastIdrReq_) < cooldown) {
             return;
         }
         hasIdrReq_ = true;
         lastIdrReq_ = now;
+        if (consecutiveIdrReqs_ < 10) {
+            ++consecutiveIdrReqs_;
+        }
     }
 
     std::shared_ptr<rtc::DataChannel> dc;
@@ -436,11 +489,11 @@ void IzletBroadcastSession::requestPublisherIdr() {
     if (!sentDc) {
         std::lock_guard lock(idrMutex_);
         pendingKontrolIdr_ = true;
-    }
-    if (vt) {
-        try {
-            vt->requestKeyframe();
-        } catch (const std::exception&) {
+        if (vt) {
+            try {
+                vt->requestKeyframe();
+            } catch (const std::exception&) {
+            }
         }
     }
 }
@@ -459,10 +512,15 @@ void IzletBroadcastSession::onPublisherVideoFrame(const rtc::binary& data, const
             return;
         }
         ingestBroken_.store(false);
+        {
+            std::lock_guard lock(idrMutex_);
+            consecutiveIdrReqs_ = 0;
+        }
         oviora::log::info("izlet-sfu", std::format("yid={} key frame after the loss: viewers go on", shortYid_));
     }
 
     bool triggerIdr = false;
+    bool gotIdr = false;
     {
         std::lock_guard lock(mediaMutex_);
         const auto now = std::chrono::steady_clock::now();
@@ -485,6 +543,7 @@ void IzletBroadcastSession::onPublisherVideoFrame(const rtc::binary& data, const
 
         const auto frame = gopBuffer_.pushAccessUnit(span, mediaSec);
         if (!frame) return;
+        gotIdr = frame->isIdr;
 
         if (!pubCanliSent_.exchange(true)) {
             oviora::log::info("izlet-sfu", std::format("yid={} first video frame received (canli)", shortYid_));
@@ -506,6 +565,11 @@ void IzletBroadcastSession::onPublisherVideoFrame(const rtc::binary& data, const
                 triggerIdr = true;
             }
         }
+    }
+
+    if (gotIdr) {
+        std::lock_guard lock(idrMutex_);
+        consecutiveIdrReqs_ = 0;
     }
 
     if (triggerIdr) {
@@ -641,6 +705,7 @@ bool IzletBroadcastSession::addViewer(const std::string& iid, std::string* error
 
     std::weak_ptr<IzletBroadcastSession> weakSelf = shared_from_this();
     viewer->senderThread = std::jthread([weakSelf, viewer](std::stop_token st) {
+        GecitSleepTimer sleepTimer;
         bool videoTsOriginSet = false;
         double videoTsOrigin = 0.0;
         double lastSentVideoSec = -0.001;
@@ -668,7 +733,9 @@ bool IzletBroadcastSession::addViewer(const std::string& iid, std::string* error
                 aTrack = viewer->audioTrack;
             }
 
-            for (const auto& vf : vBatch) {
+            const bool catchUpReplay = vBatch.size() > 2;
+            for (std::size_t idx = 0; idx < vBatch.size(); ++idx) {
+                const auto& vf = vBatch[idx];
                 if (st.stop_requested() || viewer->closed.load(std::memory_order_relaxed)) break;
                 if (!vTrack || !vTrack->isOpen() || !vf.bytes || vf.bytes->empty()) continue;
 
@@ -693,6 +760,9 @@ bool IzletBroadcastSession::addViewer(const std::string& iid, std::string* error
                         }
                     }
                 } catch (const std::exception&) {
+                }
+                if (catchUpReplay && idx + 1 < vBatch.size()) {
+                    sleepTimer.waitMicroseconds(1500);
                 }
             }
 
@@ -829,7 +899,7 @@ void IzletBroadcastSession::onViewerTrack(const std::shared_ptr<Viewer>& viewer,
                 rtc::NalUnit::Separator::StartSequence, rtpConfig);
         }
         auto sr = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
-        auto nack = std::make_shared<rtc::RtcpNackResponder>(2048);
+        auto nack = std::make_shared<rtc::RtcpNackResponder>(4096);
         auto pli = std::make_shared<rtc::PliHandler>([weakSelf, weakViewer]() {
             auto self = weakSelf.lock();
             auto v = weakViewer.lock();
@@ -891,9 +961,11 @@ void IzletBroadcastSession::onViewerVideoReady(const std::shared_ptr<Viewer>& vi
     {
         std::lock_guard mLock(mediaMutex_);
         const auto snap = gopBuffer_.snapshotGop();
+        std::lock_guard pLock(viewer->pliMutex);
         std::lock_guard qLock(viewer->queueMutex);
         viewer->videoReady.store(true, std::memory_order_release);
         if (snap.valid && !snap.frames.empty()) {
+            viewer->lastPliReplayedIdrSeq = snap.idrSeq;
             viewer->waitingForIdr = false;
             for (const auto& f : snap.frames) {
                 viewer->enqueueVideoLocked(f, false);
@@ -938,7 +1010,9 @@ void IzletBroadcastSession::onViewerPli(const std::shared_ptr<Viewer>& viewer) {
             }
         } else {
             std::lock_guard qLock(viewer->queueMutex);
-            viewer->waitingForIdr = true;
+            if (!snap.valid || snap.frames.empty()) {
+                viewer->waitingForIdr = true;
+            }
             needPublisherIdr = true;
         }
     }

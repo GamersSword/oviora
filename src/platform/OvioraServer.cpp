@@ -61,7 +61,9 @@ static const char *GROUP = "yakamoz_server";
 static const char *CODE_PREFIX = "YAKAMOZ-SUNUCU-";
 static const int POLL_MS = 3000;
 static const int ACCOUNT_MS = 10000;
-static const int UPDATE_CHECK_MS = 6 * 3600 * 1000;
+// A release on GitHub reaches an app left open within this long (one GitHub API call each; the
+// unauthenticated limit is 60 an hour). It downloads in the background; installing waits for the game
+static const int UPDATE_CHECK_MS = 10 * 60 * 1000;
 static const int PS5_TARGET = 1000100;
 static const char *OLD_SUFFIX = ".eski";
 // The program's file; "Yakamoz.exe" was its old name and is only a starter for old copies now

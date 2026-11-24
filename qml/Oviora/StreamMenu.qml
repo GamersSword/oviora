@@ -1490,9 +1490,11 @@ Item {
             Text {
                 textFormat: Text.PlainText
                 Layout.fillWidth: true
-                visible: izletPanel.on && izlet.lost > 0
+                visible: izletPanel.on && (izlet.struggling || izlet.lost > 0)
                 wrapMode: Text.WordWrap
-                text: qsTr("İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor): izleyicilerde görüntü bir an donabilir. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.").arg((izlet.uploadKbps / 1000).toFixed(1))
+                text: izlet.struggling
+                      ? qsTr("İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor). Böyle sürerse oyun bozulmasın diye İzlet birkaç saniye içinde kendiliğinden durur. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.").arg((izlet.uploadKbps / 1000).toFixed(1))
+                      : qsTr("İnternetinin yükleme hızı bu yayına yetmiyor (%1 Mbit/s gidiyor, paket kayboluyor): izleyicilerde görüntü bir an donabilir. PS5 bağlantı ayarlarında bit hızını düşürürsen düzelir.").arg((izlet.uploadKbps / 1000).toFixed(1))
                 font.family: Tema.body
                 font.pixelSize: 13
                 lineHeight: 1.15
