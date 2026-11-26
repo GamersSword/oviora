@@ -8,7 +8,14 @@ namespace oviora::ui {
 namespace {
 constexpr uint32_t kPs5Bitrates[] = {5000, 10000, 15000, 20000, 30000, 50000, 80000, 100000};
 #ifdef OVIORA_ENABLE_REMOTEPLAY
-std::filesystem::path ps5Settings() { return remoteplay::profileDirectory() / L"settings.ini"; }
+// WritePrivateProfileString does not make the folder: someone who only plays over PSN has no pairing (so no
+// folder) and every quality / bit rate choice was lost on the next start
+std::filesystem::path ps5Settings() {
+    const auto directory = remoteplay::profileDirectory();
+    std::error_code ignored;
+    std::filesystem::create_directories(directory, ignored);
+    return directory / L"settings.ini";
+}
 #endif
 }
 QVariantMap QmlPlayerBridge::ps5() const {
