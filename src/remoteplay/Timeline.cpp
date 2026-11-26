@@ -3,6 +3,7 @@
 #include <limits>
 #include <stdexcept>
 #include <algorithm>
+#include <cstdlib>
 namespace oviora::remoteplay {
 Sequence16Extender::Result Sequence16Extender::observe(std::uint16_t n) noexcept {
     if(!initialized_){initialized_=true;previous_=n;extended_=n;return {extended_,true,true,0};}
@@ -42,10 +43,25 @@ std::optional<EstimatedStamp> RemotePlayClock::video(std::uint64_t index,HostTim
     while(!phaseWindow_.empty()&&phaseWindow_.front().arrival<=arrival-10000000)phaseWindow_.pop_front();
     while(!phaseWindow_.empty()&&phaseWindow_.back().error>=error)phaseWindow_.pop_back();
     phaseWindow_.push_back({arrival,error});
-    // At most 0.5% slew; even after a jitter burst successive PTS cannot
-    // reverse or abruptly jump. A real network gap still resets above.
     const auto step=10000000/static_cast<std::int64_t>(fps_);
-    const auto maxSlew=step/200;
+    // Even the least late frame of the last second is a quarter second off the
+    // estimate: the console sent fewer (or more) frames than the profile's rate
+    // for a while, as under heavy loss. The 0.5% slew below would need minutes,
+    // and the sound follows these stamps meanwhile (1.5 s behind the picture in
+    // a field log, 2026-11-26): start again from this frame, as after a gap.
+    if(!gap&&index!=firstIndex_&&std::llabs(phaseWindow_.front().error-phase_)>2500000){
+        videoAnchor_=arrival-origin_;firstIndex_=index;
+        phaseWindow_.clear();phase_=0;
+        lastArrival_=arrival;lastIndex_=index;lastPts_=videoAnchor_;
+        return EstimatedStamp{videoAnchor_,step,true};
+    }
+    // At most 0.5% slew; even after a jitter burst successive PTS cannot
+    // reverse or abruptly jump. A real network gap still resets above. More
+    // than 100 ms off for a whole second is a rate change, not jitter: up to
+    // half a frame per frame then, so a stream running as slow as 40 fps is
+    // caught up without a discontinuity.
+    const auto lag=phaseWindow_.front().error-phase_;
+    const auto maxSlew=std::llabs(lag)>1000000?step/2:step/200;
     phase_+=std::clamp(phaseWindow_.front().error-phase_,-maxSlew,maxSlew);
     if(phase_>0&&nominal>std::numeric_limits<std::int64_t>::max()-phase_)return {};
     auto pts=nominal+phase_;
