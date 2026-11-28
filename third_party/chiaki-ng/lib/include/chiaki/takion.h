@@ -117,6 +117,9 @@ typedef struct chiaki_takion_connect_info_t
 	bool enable_dualsense;
 	uint8_t protocol_version;
 	bool close_socket; // close socket when finishing takion
+	// Oviora: how long a missing A/V packet is waited for before it counts as lost; 0: TAKION_AV_REORDER_TIMEOUT_US.
+	// Internet (PSN) streams wait longer: mobile and long lines deliver late packets that are not lost.
+	uint32_t av_reorder_timeout_us;
 } ChiakiTakionConnectInfo;
 
 
@@ -124,6 +127,7 @@ typedef struct chiaki_takion_t
 {
 	ChiakiLog *log;
 	uint8_t version;
+	uint32_t av_reorder_timeout_us;
 
 	// Whether or not audio or video is disabled from further processing beyond basic ack
 	ChiakiDisableAudioVideo disable_audio_video;

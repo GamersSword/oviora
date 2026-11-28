@@ -52,6 +52,11 @@ void QmlPlayerBridge::loadGameInput() {
     }
 #ifdef OVIORA_ENABLE_REMOTEPLAY
     i.controller.setFeedbackScale(g.rumble, g.haptics);
+    {
+        const QString aim = i.prefs.value("gyroAim").toString();
+        const int sens = i.prefs.contains("gyroAimSens") ? i.prefs.value("gyroAimSens").toInt() : 10;
+        i.controller.setGyroAim(aim == QLatin1String("l2") ? 1 : aim == QLatin1String("always") ? 2 : 0, float(std::clamp(sens, 2, 40)) / 10.f);
+    }
 #endif
     if (!g.keyboard) releaseGameKeys();
     loadMouseAim();

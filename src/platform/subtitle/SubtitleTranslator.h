@@ -68,6 +68,8 @@ class SubtitleTranslator : public QObject
     Q_PROPERTY(bool selecting READ selecting WRITE setSelecting NOTIFY selectingChanged)
     // The PS5 title id of the game being played ("" = unknown, lines go under "genel")
     Q_PROPERTY(QString game READ game WRITE setGame NOTIFY gameChanged)
+    // The last 40 lines shown in this stream, newest first: [{en, tr, at (ms)}] (Ctrl+O > Altyazı > Son satırlar)
+    Q_PROPERTY(QVariantList history READ history NOTIFY historyChanged)
 
 public:
     SubtitleTranslator(engine::EngineController &engine, HWND video, const QString &configPath, QObject *parent = nullptr);
@@ -83,6 +85,7 @@ public:
     bool selecting() const { return selectingFlag; }
     void setSelecting(bool on);
     QString game() const { return gameId; }
+    QVariantList history() const { return lineHistory; }
     void setGame(const QString &titleId);
     bool enabled() const { return cfg->value(QStringLiteral("enabled")).toBool(); }
 
@@ -101,6 +104,8 @@ public:
     Q_INVOKABLE bool sharedMemoryActive() const;
     // "Düzelt" (Ctrl+E): asks to correct the line on screen; QML answers with the dialog
     Q_INVOKABLE void openCorrection();
+    // "Düzelt" for an earlier line (from history)
+    Q_INVOKABLE void correctLine(const QString &english, const QString &translation);
     Q_INVOKABLE void loadVariants(const QString &english);
     Q_INVOKABLE void correct(const QString &english, const QString &translation);
     Q_INVOKABLE void vote(double id, int value, const QString &english);
@@ -112,6 +117,7 @@ signals:
     void selectingChanged();
     void availableChanged();
     void gameChanged();
+    void historyChanged();
     void correctionRequested(const QString &english, const QString &translation);
     void variantsLoaded(const QString &english, double shown, const QVariantList &list, const QString &error);
 
@@ -185,6 +191,7 @@ private:
     QString ocrText;          // last OCR result (source language)
     QString displayedSource;  // currently displayed source
     QString translatedText;   // currently displayed translation
+    QVariantList lineHistory; // the last 40 lines shown, newest first
     QRectF ocrBox;
     int ocrLines = 0;
     QVariantList ocrRows;

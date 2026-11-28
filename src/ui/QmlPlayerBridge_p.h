@@ -409,12 +409,16 @@ struct QmlPlayerBridge::Impl {
     std::chrono::steady_clock::time_point lastSuspend{};
     // Mouse aim and the mouse touchpad (bridge/MouseAim.cpp), old MouseAim / mouse_touch_enabled.
     struct MouseAim {
-        enum Action { None = 0, R2, L2, R1, L1, R3, L3, Square, Cross, Circle, Triangle, ActionCount };
+        enum Action { None = 0, R2, L2, R1, L1, R3, L3, Square, Cross, Circle, Triangle, Up, Down, Left, Right, Touchpad, Options, ActionCount };
+        // Buttons: left, right, middle, side back (M4), side forward (M5); then the wheel up and down (a short press)
+        static constexpr int Buttons = 5, Inputs = 7;
         // Settings (preference mouseAim; keyboardMouse switches it off too)
         bool enabled = false;
         int sensitivity = 50, accel = 30;
+        int adsPercent = 100;                     // sensitivity while aiming (L2 held by the mouse or the pad), 20-100 %
+        int deadZone = 18;                        // lift over the games' stick dead zone, 0-35 %
         bool invertY = false;
-        int actions[3] = {R2, L2, R3};           // left, right, middle
+        int actions[Inputs] = {R2, L2, R3, None, None, None, None};   // left, right, middle, M4, M5, wheel up, wheel down
         int toggleKey = Qt::Key_F8;
         bool touch = true;                        // preference mouseTouch (and keyboardMouse)
         // Capture
@@ -428,7 +432,9 @@ struct QmlPlayerBridge::Impl {
         double accX = 0, accY = 0, velX = 0, velY = 0;
         bool absKnown = false; long absX = 0, absY = 0;
         std::chrono::steady_clock::time_point lastTick{}, lastMotion{}, capturedAt{};
-        bool down[3] = {false, false, false};
+        bool down[Buttons] = {false, false, false, false, false};
+        std::chrono::steady_clock::time_point wheelUntil[2]{};   // a wheel step holds its button this long
+        uint32_t wheelButtons = 0; uint8_t wheelL2 = 0, wheelR2 = 0;
         uint32_t buttons = 0; uint8_t l2 = 0, r2 = 0; int16_t rightX = 0, rightY = 0;
         uint32_t loggedButtons = 0; int16_t loggedX = 0, loggedY = 0; uint8_t loggedL2 = 0, loggedR2 = 0;
         std::chrono::steady_clock::time_point loggedAt{};
@@ -616,6 +622,7 @@ struct QmlPlayerBridge::Impl {
         return file.commit();
     }
     int prefInt(const char* key, int fallback) const { return prefs.contains(key) ? prefs.value(key).toInt() : fallback; }
+    int padBatteryTick = 0, padBatteryKey = -10;   // tickPs5: the pad's battery, looked at now and then
     bool prefBool(const char* key, bool fallback) const { return prefs.contains(key) ? prefs.value(key).toBool() : fallback; }
     QString prefString(const char* key) const { return prefs.value(key).toString(); }
     Impl(engine::EngineController& e, std::filesystem::path dataDirectory)

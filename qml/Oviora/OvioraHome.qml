@@ -222,14 +222,27 @@ Pane {
     // A PSN row's state words: "bağlısın", "mehmet oynuyor", "boşta"
     function psnStateWord(c) {
         if (server.sessionDuid == c.duid)
-            return server.sessionState == "asking" ? qsTr("bağlanılıyor…") : qsTr("bağlısın");
+            return server.sessionState == "asking" ? qsTr("bağlanılıyor…")
+                 : server.sessionState == "waiting" ? qsTr("%1 onayı bekleniyor…").arg(c.host) : qsTr("bağlısın");
         if (c.busy.length > 0)
             return qsTr("%1 oynuyor").arg(c.busy);
         return qsTr("boşta");
     }
     // A PSN row's (or PS5 card's) state line: whose it is, the state words, what it runs
     function psnStateLine(c, state, app) {
-        const line = c.mine ? qsTr("Senin konsolun, %1").arg(state) : qsTr("%1 paylaşıyor, %2").arg(c.host).arg(state);
+        let line = c.mine ? qsTr("Senin konsolun, %1").arg(state) : qsTr("%1 paylaşıyor, %2").arg(c.host).arg(state);
+        // The owner's rules for me (Sharing 2.0)
+        if (!c.mine) {
+            const rules = [];
+            if (c.limit_min > 0)
+                rules.push(c.limit_min >= 60 ? qsTr("%1 saat").arg(c.limit_min / 60) : qsTr("%1 dk").arg(c.limit_min));
+            if (c.ask_first)
+                rules.push(qsTr("önce sorulur"));
+            if (c.allowed_games && c.allowed_games.length)
+                rules.push(qsTr("yalnız: %1").arg(c.allowed_games.join(", ")));
+            if (rules.length)
+                line += " · " + rules.join(" · ");
+        }
         // What the PS5 runs, as its owner's app last reported it (me.available[].app)
         return app && app.name ? line + " · " + qsTr("Şu an açık: %1").arg(app.name) : line;
     }
@@ -545,8 +558,16 @@ Pane {
             text: qsTr("Adını değiştir")
             onClicked: home.showConsoleRename(pa.c.duid, pa.c.name)
         }
+        // Waiting for the owner's yes (Sharing 2.0): stop waiting
         TextButton {
-            visible: !pa.canQueue
+            visible: home.server.sessionState == "waiting" && home.server.sessionDuid == pa.c.duid
+            compact: pa.compact
+            kind: "secondary"
+            text: qsTr("Vazgeç")
+            onClicked: home.server.cancelWaiting()
+        }
+        TextButton {
+            visible: !pa.canQueue && !(home.server.sessionState == "waiting" && home.server.sessionDuid == pa.c.duid)
             compact: pa.compact
             kind: pa.taken ? "secondary" : "primary"
             enabled: !pa.taken && home.server.sessionState == "idle"
@@ -3093,6 +3114,17 @@ Pane {
                 home.openShareConsoles(f[0].name);
         }
     }
+    // Testing: --dialog sharerules opens the share rules window for the first friend and PS5, with sample rules
+    Timer {
+        interval: 6000
+        running: typeof vyTest !== "undefined" && vyTest.dialog === "sharerules"
+        onTriggered: {
+            const f = home.server.friends || [];
+            if (f.length > 0 && home.server.consoles.length > 0)
+                home.openShareRules(home.server.consoles[0], f[0].name,
+                    { limit_min: 60, ask_first: true, titles: [{ id: "PPSA01342", name: "Marvel's Spider-Man 2" }, { id: "PPSA03420", name: "GTA V" }] });
+        }
+    }
     // Testing: --dialog psnlink shows the "PSN hesabını bağla" popup only (no sign-in address is asked for,
     // so no page loads)
     Timer {
@@ -3101,6 +3133,262 @@ Pane {
         onTriggered: {
             psnLinkLoader.active = true;
             if (psnLinkLoader.item) psnLinkLoader.item.popup.open();
+        }
+    }
+    // Sharing 2.0: "Süre: sınırsız · Önce sorulmaz · Tüm oyunlar"
+    function ruleSummary(r) {
+        const parts = [];
+        const limit = r ? r.limit_min : 0;
+        parts.push(limit > 0 ? (limit >= 60 ? qsTr("Süre: %1 saat").arg(limit / 60) : qsTr("Süre: %1 dk").arg(limit)) : qsTr("Süre: sınırsız"));
+        parts.push(r && r.ask_first ? qsTr("önce sana sorulur") : qsTr("sorulmadan bağlanır"));
+        parts.push(r && r.titles && r.titles.length ? qsTr("yalnız %1").arg(r.titles.map(t => t.name).join(", ")) : qsTr("tüm oyunlar"));
+        return parts.join(" · ");
+    }
+    function openShareRules(con, friend, rule) {
+        if (!con)
+            return;
+        shareRulesLoader.active = true;
+        if (shareRulesLoader.item)
+            shareRulesLoader.item.popup.start(con, friend, rule);
+    }
+    Loader {
+        id: shareRulesLoader
+        active: false
+        sourceComponent: Component {
+            Item {
+                property alias popup: shareRules
+                Popup {
+                    id: shareRules
+                    parent: Overlay.overlay
+                    x: Math.round((home.Window.width - width) / 2)
+                    y: Math.round((home.Window.height - height) / 2)
+                    width: Math.min(480, home.width - 64)
+                    height: Math.min(implicitHeight, home.Window.height - 64)
+                    modal: true
+                    dim: true
+                    padding: 24
+                    property string duid: ""
+                    property string consoleName: ""
+                    property string friend: ""
+                    property int limit: 0
+                    property bool askFirst: false
+                    property bool onlySome: false
+                    property var picked: ({})   // title id -> name
+                    // The games to pick: those seen on my PS5s, plus the ones picked before (they may be older)
+                    readonly property var games: {
+                        const out = [], seen = {};
+                        for (const t of home.server.ownerTitles || []) {
+                            if (!seen[t.id]) { seen[t.id] = true; out.push(t); }
+                        }
+                        for (const id in picked) {
+                            if (!seen[id]) { seen[id] = true; out.push({ id: id, name: picked[id] }); }
+                        }
+                        return out;
+                    }
+                    function start(con, f, rule) {
+                        duid = con.duid;
+                        consoleName = con.name;
+                        friend = f;
+                        limit = rule ? rule.limit_min : 0;
+                        askFirst = !!(rule && rule.ask_first);
+                        const p = {};
+                        for (const t of (rule && rule.titles) || [])
+                            p[t.id] = t.name;
+                        picked = p;
+                        onlySome = Object.keys(p).length > 0;
+                        home.server.loadOwnerTitles();
+                        open();
+                    }
+                    function toggleGame(t, on) {
+                        const p = Object.assign({}, picked);
+                        if (on)
+                            p[t.id] = t.name;
+                        else
+                            delete p[t.id];
+                        picked = p;
+                    }
+                    function save() {
+                        const titles = [];
+                        if (onlySome)
+                            for (const id in picked)
+                                titles.push({ id: id, name: picked[id] });
+                        home.server.setShareRules(duid, friend, limit, askFirst, titles);
+                        close();
+                    }
+                    background: Rectangle {
+                        radius: Tema.radiusPanel
+                        color: Tema.surface
+                        border.color: Tema.lineStrong
+                    }
+                    contentItem: ColumnLayout {
+                        spacing: 14
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            text: qsTr("%1 için kurallar").arg(shareRules.friend)
+                            elide: Text.ElideRight
+                            font.family: Tema.display
+                            font.pixelSize: 22
+                            color: Tema.text
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            Layout.topMargin: -8
+                            text: shareRules.consoleName
+                            elide: Text.ElideRight
+                            font.family: Tema.body
+                            font.pixelSize: 13
+                            color: Tema.muted
+                        }
+                        // Time per session
+                        Label {
+                            textFormat: Text.PlainText
+                            text: qsTr("Bir oturumda oynama süresi")
+                            font.family: Tema.body
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            color: Tema.text
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Repeater {
+                                model: [[0, qsTr("Sınırsız")], [30, qsTr("30 dk")], [60, qsTr("1 saat")], [120, qsTr("2 saat")], [180, qsTr("3 saat")]]
+                                delegate: TextButton {
+                                    required property var modelData
+                                    compact: true
+                                    kind: shareRules.limit === modelData[0] ? "primary" : "secondary"
+                                    text: modelData[1]
+                                    onClicked: shareRules.limit = modelData[0]
+                                }
+                            }
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            visible: shareRules.limit > 0
+                            wrapMode: Text.WordWrap
+                            text: qsTr("Süre bitmeden %1 senden ek süre isteyebilir. Süre dolunca oturum kapanır; yeniden bağlanmak için yarım saat beklemesi gerekir.").arg(shareRules.friend)
+                            font.family: Tema.body
+                            font.pixelSize: 12
+                            color: Tema.faint
+                        }
+                        RuleCheck {
+                            Layout.fillWidth: true
+                            checked: shareRules.askFirst
+                            onToggled: shareRules.askFirst = checked
+                            text: qsTr("Bağlanmadan önce bana sor")
+                            note: qsTr("%1 her bağlanmak istediğinde sana bildirim gelir; izin verirsen bağlanır.").arg(shareRules.friend)
+                        }
+                        RuleCheck {
+                            Layout.fillWidth: true
+                            checked: shareRules.onlySome
+                            onToggled: shareRules.onlySome = checked
+                            text: qsTr("Yalnız seçtiğim oyunlar")
+                            note: qsTr("Başka bir oyun açılırsa %1 uyarılır; 45 saniye içinde dönmezse oturum kapanır. PS5'in menülerini ve ayarlarını engelleyemez.").arg(shareRules.friend)
+                        }
+                        ScrollView {
+                            visible: shareRules.onlySome
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.min(gameList.implicitHeight, 220)
+                            contentWidth: availableWidth
+                            clip: true
+                            ColumnLayout {
+                                id: gameList
+                                width: parent.width
+                                spacing: 2
+                                EmptyNote {
+                                    visible: shareRules.games.length === 0
+                                    Layout.topMargin: 0
+                                    text: qsTr("Henüz oyun görülmedi. PS5'inde bir oyun açıkken (ev ağında Oviora açıksa ya da PSN oyun bilgisi bağlıysa) burada listelenir.")
+                                }
+                                Repeater {
+                                    model: shareRules.games
+                                    delegate: RuleCheck {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 28
+                                        checked: shareRules.picked[modelData.id] !== undefined
+                                        onToggled: shareRules.toggleGame(modelData, checked)
+                                        text: modelData.name
+                                    }
+                                }
+                            }
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            visible: shareRules.onlySome
+                            wrapMode: Text.WordWrap
+                            text: qsTr("İpucu: oyunu PS5'inde açıp konsolu dinlenme moduna bırakırsan %1 bağlanınca doğrudan oyuna girer. Kayıtlarını korumak için ona ayrı bir PS5 kullanıcısı açabilirsin.").arg(shareRules.friend)
+                            font.family: Tema.body
+                            font.pixelSize: 12
+                            color: Tema.faint
+                        }
+                        RowLayout {
+                            Layout.alignment: Qt.AlignRight
+                            spacing: 8
+                            TextButton { text: qsTr("Vazgeç"); onClicked: shareRules.close() }
+                            TextButton {
+                                kind: "primary"
+                                text: qsTr("Kaydet")
+                                enabled: !shareRules.onlySome || Object.keys(shareRules.picked).length > 0
+                                onClicked: shareRules.save()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // A check with an optional quiet note under it (the share rules)
+    component RuleCheck: Basic.CheckBox {
+        id: rc
+        property string note: ""
+        padding: 0
+        spacing: 10
+        indicator: Rectangle {
+            x: rc.leftPadding
+            y: rc.topPadding + 2
+            implicitWidth: 18
+            implicitHeight: 18
+            radius: 4
+            color: rc.checked ? Tema.accent : (rc.hovered ? Tema.line : Tema.surface2)
+            border.width: rc.checked ? 0 : 1
+            border.color: rc.visualFocus ? Tema.accent : Tema.lineStrong
+            Text {
+                anchors.centerIn: parent
+                visible: rc.checked
+                text: "✓"
+                color: Tema.inkOnAccent
+                font.pixelSize: 13
+                font.bold: true
+            }
+        }
+        contentItem: ColumnLayout {
+            spacing: 2
+            Label {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                leftPadding: rc.indicator.width + rc.spacing
+                text: rc.text
+                wrapMode: Text.WordWrap
+                font.family: Tema.body
+                font.pixelSize: 14
+                color: Tema.text
+            }
+            Label {
+                textFormat: Text.PlainText
+                visible: rc.note.length > 0
+                Layout.fillWidth: true
+                leftPadding: rc.indicator.width + rc.spacing
+                text: rc.note
+                wrapMode: Text.WordWrap
+                font.family: Tema.body
+                font.pixelSize: 12
+                color: Tema.faint
+            }
         }
     }
     Loader {
@@ -3303,6 +3591,31 @@ Pane {
                                                     color: shareSwitch.checked ? Tema.inkOnAccent : Tema.muted
                                                     Behavior on x { NumberAnimation { duration: 120 } }
                                                 }
+                                            }
+                                        }
+                                        // Sharing 2.0: this friend's rules on this console, and the button to change them
+                                        RowLayout {
+                                            id: ruleLine
+                                            readonly property var rule: shareSwitch.con && shareSwitch.con.share_rules ? (shareSwitch.con.share_rules[shareConsoles.friend] || null) : null
+                                            visible: shareSwitch.checked
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: (shareEntry.modelData.sub ? 14 : 2) + 44
+                                            Layout.bottomMargin: 6
+                                            spacing: 8
+                                            Label {
+                                                textFormat: Text.PlainText
+                                                Layout.fillWidth: true
+                                                text: home.ruleSummary(ruleLine.rule)
+                                                elide: Text.ElideRight
+                                                font.family: Tema.body
+                                                font.pixelSize: 12
+                                                color: Tema.faint
+                                            }
+                                            TextButton {
+                                                kind: "quiet"
+                                                compact: true
+                                                text: qsTr("Kurallar")
+                                                onClicked: home.openShareRules(shareSwitch.con, shareConsoles.friend, ruleLine.rule)
                                             }
                                         }
                                     }

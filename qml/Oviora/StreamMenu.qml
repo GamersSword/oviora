@@ -298,6 +298,7 @@ Item {
         "image": "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2z M3.5 16.5l4.5 -4.5l5.5 5.5 M13 15l3 -3l4.5 4.5 M15.5 6.8a1.7 1.7 0 1 1 0 3.4a1.7 1.7 0 1 1 0 -3.4z",
         "sleep": "M20 14.6a8.2 8.2 0 1 1 -10.6 -10.6a6.6 6.6 0 0 0 10.6 10.6z",
         "close": "M6 6l12 12 M18 6l-12 12",
+        "clock": "M12 3.5a8.5 8.5 0 1 1 0 17a8.5 8.5 0 1 1 0 -17z M12 7.5v5l3.5 2",
         "volume": "M4 9.5h3l5 -4.5v14l-5 -4.5h-3a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z M15.5 9a4 4 0 0 1 0 6 M18.5 6a8 8 0 0 1 0 12",
         "volume-off": "M4 9.5h3l5 -4.5v14l-5 -4.5h-3a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z M16 9.5l5 5 M21 9.5l-5 5",
         "chevron-down": "M6 9l6 6l6 -6",
@@ -884,6 +885,16 @@ Item {
                             font.pixelSize: 14
                             color: Tema.muted
                         }
+                        // The pad's battery (DualSense and other pads that report it)
+                        Text {
+                            readonly property int battery: oviora.ps5 && oviora.ps5.controller && oviora.ps5.battery !== undefined ? oviora.ps5.battery : -1
+                            visible: battery >= 0
+                            textFormat: Text.PlainText
+                            text: "· " + (oviora.ps5 && oviora.ps5.charging ? qsTr("Kumanda %%1, şarj oluyor").arg(battery) : qsTr("Kumanda %%1").arg(battery))
+                            font.family: Tema.body
+                            font.pixelSize: 14
+                            color: battery >= 0 && battery <= 15 && !(oviora.ps5 && oviora.ps5.charging) ? Tema.danger : Tema.muted
+                        }
                     }
                 }
             }
@@ -940,6 +951,29 @@ Item {
                 badge: messages.unreadTotal
                 opens: true
                 onClicked: { mainPanel.cameFrom = messagesItem; menu.openChat("") }
+            }
+            // Sharing 2.0: on a friend's PS5 with a time limit, the time left; a click asks the owner for more
+            DrawerItem {
+                id: moreTimeRow
+                readonly property int secondsLeft: typeof platform !== "undefined" && platform ? platform.sessionRemaining : -1
+                visible: secondsLeft >= 0
+                text: qsTr("Ek süre iste")
+                glyph: "clock"
+                value: secondsLeft >= 3600 ? qsTr("%1 sa %2 dk kaldı").arg(Math.floor(secondsLeft / 3600)).arg(Math.floor(secondsLeft % 3600 / 60))
+                     : qsTr("%1 dk kaldı").arg(Math.max(1, Math.ceil(secondsLeft / 60)))
+                tone: secondsLeft >= 0 && secondsLeft < 300 ? Tema.warm : Tema.text
+                onClicked: platform.askMoreTime()
+            }
+            // Per-game profile: saves the subtitle area, picture preset and mouse aim for the running game
+            DrawerItem {
+                id: gameProfileRow
+                readonly property var game: menu.owner ? menu.owner.currentGame : ({ id: "" })
+                readonly property bool saved: !!(menu.owner && menu.owner.gameProfile)
+                visible: !!game && game.id.length > 0
+                text: saved ? qsTr("Bu oyunun ayarlarını güncelle") : qsTr("Bu oyun için kaydet")
+                glyph: "sliders"
+                value: game && game.name ? game.name : ""
+                onClicked: menu.owner.saveGameProfile()
             }
             DrawerItem {
                 id: screenshotRow
@@ -1219,7 +1253,62 @@ Item {
                     color: Tema.text
                 }
             }
-            Item { Layout.fillHeight: true }
+            // The last lines of this stream: a missed line read again; a click corrects it (shared memory)
+            Text {
+                textFormat: Text.PlainText
+                visible: (subtitles.history || []).length > 0
+                Layout.topMargin: 14
+                text: qsTr("Son satırlar · düzeltmek için tıkla")
+                font.family: Tema.body
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                color: Tema.muted
+            }
+            ListView {
+                id: subHistory
+                visible: count > 0
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: 80
+                clip: true
+                spacing: 2
+                model: subtitles.history || []
+                boundsBehavior: Flickable.StopAtBounds
+                delegate: AbstractButton {
+                    id: histRow
+                    required property var modelData
+                    width: subHistory.width
+                    hoverEnabled: true
+                    padding: 8
+                    onClicked: subtitles.correctLine(modelData.en, modelData.tr)
+                    background: Rectangle {
+                        radius: 8
+                        color: histRow.hovered ? Tema.surface2 : "transparent"
+                    }
+                    contentItem: Column {
+                        spacing: 2
+                        Text {
+                            textFormat: Text.PlainText
+                            width: parent.width
+                            text: histRow.modelData.tr
+                            wrapMode: Text.WordWrap
+                            font.family: Tema.body
+                            font.pixelSize: 14
+                            color: Tema.text
+                        }
+                        Text {
+                            textFormat: Text.PlainText
+                            width: parent.width
+                            text: histRow.modelData.en
+                            wrapMode: Text.WordWrap
+                            font.family: Tema.body
+                            font.pixelSize: 12
+                            color: Tema.faint
+                        }
+                    }
+                }
+            }
+            Item { Layout.fillHeight: true; visible: !subHistory.visible }
         }
     }
     readonly property Item subsFirst: subOnRow

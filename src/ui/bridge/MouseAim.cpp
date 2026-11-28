@@ -23,17 +23,46 @@ using remoteplay::ControllerState;
 constexpr double kSmoothTau = 0.012;          // s, pointer speed smoothing
 constexpr double kStopAfter = 0.045;          // s without movement: stick back to the centre
 constexpr double kMinSpeed = 12.0;            // px/s; below this the stick rests
-constexpr double kAntiDeadZone = 0.18;        // games ignore roughly the inner 10-20 % of the stick
+constexpr auto kWheelPress = std::chrono::milliseconds(90);   // a wheel step is a short press
 constexpr double kFullSpeedAt50 = 1200.0;     // px/s for full deflection at sensitivity 50
 constexpr auto kPressGuard = std::chrono::milliseconds(200); // a click that brings the window back doesn't fire
-constexpr const char* kActionNames[] = {"none", "R2", "L2", "R1", "L1", "R3", "L3", "Square", "Cross", "Circle", "Triangle"};
+constexpr const char* kActionNames[] = {"none", "R2", "L2", "R1", "L1", "R3", "L3", "Square", "Cross", "Circle", "Triangle",
+                                        "Up", "Down", "Left", "Right", "Touchpad", "Options"};
 
-double curve(double speed, int sensitivity, int accel) {
+// Games ignore roughly the inner 10-20 % of the stick: the lift (deadZone %) skips it
+double curve(double speed, double sensitivity, int accel, int deadZone) {
     if (speed < kMinSpeed) return 0.0;
-    const double full = kFullSpeedAt50 * 50.0 / std::clamp(sensitivity, 1, 100);
+    const double full = kFullSpeedAt50 * 50.0 / std::clamp(sensitivity, 0.2, 100.0);
     const double norm = std::min(1.0, speed / full);
     const double p = 1.0 + std::clamp(accel, 0, 100) / 100.0;
-    return kAntiDeadZone + (1.0 - kAntiDeadZone) * std::pow(norm, p);
+    const double lift = std::clamp(deadZone, 0, 35) / 100.0;
+    return lift + (1.0 - lift) * std::pow(norm, p);
+}
+// A button choice to the state: its bit, or L2/R2's pull
+void press(int action, bool on, uint32_t& buttons, uint8_t& l2, uint8_t& r2) {
+    // The same order as Impl::MouseAim::Action (the preference stores these numbers)
+    enum A { None = 0, R2, L2, R1, L1, R3, L3, Square, Cross, Circle, Triangle, Up, Down, Left, Right, Touchpad, Options };
+    uint32_t bit = 0;
+    switch (action) {
+    case A::R2: r2 = on ? 255 : 0; return;
+    case A::L2: l2 = on ? 255 : 0; return;
+    case A::R1: bit = ControllerState::R1; break;
+    case A::L1: bit = ControllerState::L1; break;
+    case A::R3: bit = ControllerState::R3; break;
+    case A::L3: bit = ControllerState::L3; break;
+    case A::Square: bit = ControllerState::Square; break;
+    case A::Cross: bit = ControllerState::Cross; break;
+    case A::Circle: bit = ControllerState::Circle; break;
+    case A::Triangle: bit = ControllerState::Triangle; break;
+    case A::Up: bit = ControllerState::Up; break;
+    case A::Down: bit = ControllerState::Down; break;
+    case A::Left: bit = ControllerState::Left; break;
+    case A::Right: bit = ControllerState::Right; break;
+    case A::Touchpad: bit = ControllerState::Touchpad; break;
+    case A::Options: bit = ControllerState::Options; break;
+    default: return;
+    }
+    buttons = on ? (buttons | bit) : (buttons & ~bit);
 }
 // The window's client centre as a 1x1 screen rectangle: the captured pointer stays there.
 bool centreRect(HWND hwnd, RECT& out) {
@@ -61,13 +90,20 @@ void QmlPlayerBridge::loadMouseAim() {
     m.actions[0] = std::clamp(map.value("left", int(Impl::MouseAim::R2)).toInt(), 0, Impl::MouseAim::ActionCount - 1);
     m.actions[1] = std::clamp(map.value("right", int(Impl::MouseAim::L2)).toInt(), 0, Impl::MouseAim::ActionCount - 1);
     m.actions[2] = std::clamp(map.value("middle", int(Impl::MouseAim::R3)).toInt(), 0, Impl::MouseAim::ActionCount - 1);
+    m.actions[3] = std::clamp(map.value("x1", 0).toInt(), 0, Impl::MouseAim::ActionCount - 1);
+    m.actions[4] = std::clamp(map.value("x2", 0).toInt(), 0, Impl::MouseAim::ActionCount - 1);
+    m.actions[5] = std::clamp(map.value("wheel_up", 0).toInt(), 0, Impl::MouseAim::ActionCount - 1);
+    m.actions[6] = std::clamp(map.value("wheel_down", 0).toInt(), 0, Impl::MouseAim::ActionCount - 1);
+    m.adsPercent = std::clamp(map.value("ads", 100).toInt(), 20, 100);
+    m.deadZone = std::clamp(map.value("deadzone", 18).toInt(), 0, 35);
     m.toggleKey = map.value("toggle_key", int(Qt::Key_F8)).toInt();
     m.touch = i.prefBool("mouseTouch", true) && pcInput;
     if (!m.touch) { m.touchId = -1; m.touchClick = false; }
     // A setting changed while captured: the buttons start again from nothing.
-    if (m.captured) { std::fill(std::begin(m.down), std::end(m.down), false); m.buttons = 0; m.l2 = m.r2 = 0; }
-    oviora::log::info("mouse-aim", std::format("settings enabled={} sensitivity={} accel={} invertY={} left={} right={} middle={} toggleKey={} touchpad={}",
-        m.enabled, m.sensitivity, m.accel, m.invertY, kActionNames[m.actions[0]], kActionNames[m.actions[1]], kActionNames[m.actions[2]],
+    if (m.captured) { std::fill(std::begin(m.down), std::end(m.down), false); m.buttons = m.wheelButtons = 0; m.l2 = m.r2 = m.wheelL2 = m.wheelR2 = 0; }
+    oviora::log::info("mouse-aim", std::format("settings enabled={} sensitivity={} ads={}% deadzone={}% accel={} invertY={} left={} right={} middle={} x1={} x2={} wheel={}/{} toggleKey={} touchpad={}",
+        m.enabled, m.sensitivity, m.adsPercent, m.deadZone, m.accel, m.invertY, kActionNames[m.actions[0]], kActionNames[m.actions[1]], kActionNames[m.actions[2]],
+        kActionNames[m.actions[3]], kActionNames[m.actions[4]], kActionNames[m.actions[5]], kActionNames[m.actions[6]],
         keyName(m.toggleKey).toStdString(), m.touch));
     updateMouseAim();
     emit mouseAimChanged();
@@ -152,31 +188,27 @@ void QmlPlayerBridge::mouseAimRaw(const RAWMOUSE& raw) {
         m.absX = raw.lLastX; m.absY = raw.lLastY; m.absKnown = true;
     } else { dx = raw.lLastX; dy = raw.lLastY; }
     if (dx || dy) { m.accX += dx; m.accY += dy; m.lastMotion = now; }
-    static constexpr USHORT kDown[3] = {RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_DOWN};
-    static constexpr USHORT kUp[3] = {RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_UP};
-    for (int b = 0; b < 3; ++b) {
-        const bool press = raw.usButtonFlags & kDown[b], release = raw.usButtonFlags & kUp[b];
-        if (!press && !release) continue;
-        if (press && now - m.capturedAt < kPressGuard) continue;
-        if (press == m.down[b]) continue;
-        m.down[b] = press;
-        uint32_t bit = 0;
-        switch (m.actions[b]) {
-        case Impl::MouseAim::R2: m.r2 = press ? 255 : 0; break;
-        case Impl::MouseAim::L2: m.l2 = press ? 255 : 0; break;
-        case Impl::MouseAim::R1: bit = ControllerState::R1; break;
-        case Impl::MouseAim::L1: bit = ControllerState::L1; break;
-        case Impl::MouseAim::R3: bit = ControllerState::R3; break;
-        case Impl::MouseAim::L3: bit = ControllerState::L3; break;
-        case Impl::MouseAim::Square: bit = ControllerState::Square; break;
-        case Impl::MouseAim::Cross: bit = ControllerState::Cross; break;
-        case Impl::MouseAim::Circle: bit = ControllerState::Circle; break;
-        case Impl::MouseAim::Triangle: bit = ControllerState::Triangle; break;
-        default: break;
+    static constexpr USHORT kDown[Impl::MouseAim::Buttons] = {RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_DOWN,
+                                                             RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_5_DOWN};
+    static constexpr USHORT kUp[Impl::MouseAim::Buttons] = {RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_UP,
+                                                           RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_UP};
+    for (int b = 0; b < Impl::MouseAim::Buttons; ++b) {
+        const bool down = raw.usButtonFlags & kDown[b], release = raw.usButtonFlags & kUp[b];
+        if (!down && !release) continue;
+        if (down && now - m.capturedAt < kPressGuard) continue;
+        if (down == m.down[b]) continue;
+        m.down[b] = down;
+        press(m.actions[b], down, m.buttons, m.l2, m.r2);
+        static constexpr const char* kNames[] = {"left", "right", "middle", "x1", "x2"};
+        oviora::log::info("mouse-aim", std::format("{} button {} -> {}", kNames[b], down ? "down" : "up", kActionNames[m.actions[b]]));
+    }
+    // The wheel: a step up or down is a short press of its button
+    if ((raw.usButtonFlags & RI_MOUSE_WHEEL) && now - m.capturedAt >= kPressGuard) {
+        const int dir = SHORT(raw.usButtonData) > 0 ? 0 : 1;
+        if (m.actions[5 + dir] != Impl::MouseAim::None) {
+            m.wheelUntil[dir] = now + kWheelPress;
+            press(m.actions[5 + dir], true, m.wheelButtons, m.wheelL2, m.wheelR2);
         }
-        if (bit) m.buttons = press ? (m.buttons | bit) : (m.buttons & ~bit);
-        static constexpr const char* kNames[] = {"left", "right", "middle"};
-        oviora::log::info("mouse-aim", std::format("{} button {} -> {}", kNames[b], press ? "down" : "up", kActionNames[m.actions[b]]));
     }
 }
 
@@ -197,7 +229,9 @@ void QmlPlayerBridge::mouseAimTick(ControllerState& state) {
             m.velX += (rawX - m.velX) * a; m.velY += (rawY - m.velY) * a;
             if (std::chrono::duration<double>(now - m.lastMotion).count() > kStopAfter) m.velX = m.velY = 0;
             const double speed = std::hypot(m.velX, m.velY);
-            const double d = curve(speed, m.sensitivity, m.accel);
+            // Aiming (L2 held by the mouse or the pad): the aim sensitivity
+            const bool aiming = m.l2 > 0 || state.l2 > 40;
+            const double d = curve(speed, m.sensitivity * (aiming ? m.adsPercent / 100.0 : 1.0), m.accel, m.deadZone);
             if (d <= 0) { m.rightX = m.rightY = 0; }
             else {
                 m.rightX = int16_t(std::clamp(m.velX / speed * d * 32767.0, -32767.0, 32767.0));
@@ -209,9 +243,15 @@ void QmlPlayerBridge::mouseAimTick(ControllerState& state) {
             RECT want{}, have{};
             if (centreRect(m.hwnd, want) && GetClipCursor(&have) && !EqualRect(&want, &have)) ClipCursor(&want);
         }
+        // A wheel step's short press ends
+        for (int dir = 0; dir < 2; ++dir)
+            if (m.wheelUntil[dir] != Clock::time_point{} && now >= m.wheelUntil[dir]) {
+                m.wheelUntil[dir] = {};
+                press(m.actions[5 + dir], false, m.wheelButtons, m.wheelL2, m.wheelR2);
+            }
         state.inputActive = true;
-        state.buttons |= m.buttons;
-        state.l2 = std::max(state.l2, m.l2); state.r2 = std::max(state.r2, m.r2);
+        state.buttons |= m.buttons | m.wheelButtons;
+        state.l2 = std::max({state.l2, m.l2, m.wheelL2}); state.r2 = std::max({state.r2, m.r2, m.wheelR2});
         auto stronger = [](int16_t& v, int16_t mouse) { if (std::abs(int(mouse)) > std::abs(int(v))) v = mouse; };
         stronger(state.rightX, m.rightX); stronger(state.rightY, m.rightY);
         const auto now2 = Clock::now();

@@ -165,6 +165,8 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                 // only after this reader and the WASAPI owner have joined.
                 feeder=std::jthread([this,&source](std::stop_token cancel){
                     try {
+                        // Sleep without a raised timer resolution takes ~15.6 ms (measured 2026-11-28), not 2
+                        const auto feedTimer=std::unique_ptr<void,decltype(&CloseHandle)>(CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS),&CloseHandle);
                         float pcm[960]; double next=-1;
                         while(!cancel.stop_requested()) {
                             double pts=0;const auto count=source.pullAudio(pcm,480,&pts);
@@ -173,11 +175,15 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                                 if(!audio_.push(pcm,count*2*sizeof(float),pts,gap))
                                     log::warn("remoteplay-audio","PCM queue rejected block");
                                 next=pts+1000.0*double(count)/48000;
-                            } else std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                            } else if(feedTimer){LARGE_INTEGER due;due.QuadPart=-20000;if(SetWaitableTimer(feedTimer.get(),&due,0,nullptr,nullptr,FALSE))WaitForSingleObject(feedTimer.get(),20);else Sleep(2);} else std::this_thread::sleep_for(std::chrono::milliseconds(2));
                         }
                     } catch(const std::exception& e) {log::error("remoteplay-audio",e.what());}
                 });
             } else log::error("remoteplay-audio","output initialization failed; video remains available");
+            // The stream loop also sends the controller every 4 ms: Sleep(1) without a raised timer
+            // resolution took ~15.6 ms (measured 2026-11-28), so frames waited and the controller went out
+            // at ~64 Hz. Wait on a high-resolution timer instead (~1.5 ms), as the controller-only loop does.
+            const auto loopTimer=std::unique_ptr<void,decltype(&CloseHandle)>(CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS),&CloseHandle);
             auto lastFrame=std::chrono::steady_clock::now();
             auto nextController=lastFrame;
             auto rateStart=lastFrame;uint64_t previousReceived=receivedBase,previousDecoded=0;
@@ -257,7 +263,8 @@ void RemotePlaySessionSource::run(std::stop_token stop, RemotePlayConnectDesc de
                             recovery_.message=snapshot.state==remoteplay::SessionState::LoginPinRequired?L"等待 PS5 登录 PIN 超时，请重新连接。":native.applicationReason==0x80108b09u?L"PS5 不接受此电脑的配对，请在主机编辑中用 PS5 的新代码重新配对。":native.lastQuitReason==12?L"PS5 远程游玩会话已由主机结束（例如主机上有用户用手柄登录）。可重新连接。":native.applicationReason==0x80108b12u?L"此 PSN 账号在 PS5 上未开启远程游玩，请在 PS5 上以该账号打开 设置 > 系统 > 远程游玩 > 启用远程游玩。":native.applicationReason==0x80108b02u?L"PS5 上未登录此配对所用的 PSN 账号，请先在 PS5 上登录该账号后重新连接。":native.startupRetryAllowed?L"PS5 仍被串流会话占用，请结束其他串流或稍后重试；无需重新配对。":!native.automaticRetryAllowed?L"PS5 已结束或拒绝串流，请检查主机状态后重新连接。":L"PS5 串流未恢复，请检查主机及网络后点击连接；无需重新配对。";
                             recovery_.message+=std::format(L"（终止码 {} / 错误 {}）",native.lastQuitReason,snapshot.errorCode);break;
                         }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        if(loopTimer){LARGE_INTEGER due;due.QuadPart=-10000;if(SetWaitableTimer(loopTimer.get(),&due,0,nullptr,nullptr,FALSE))WaitForSingleObject(loopTimer.get(),20);else Sleep(1);}
+                        else std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     }
                 }
             }

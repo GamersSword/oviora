@@ -33,6 +33,8 @@ QVariantMap QmlPlayerBridge::ps5() const {
     out["controller"] = c.connected;
     out["gyro"] = c.gyro && c.accel;
     out["calibrating"] = c.calibrating;
+    out["battery"] = c.battery;
+    out["charging"] = c.charging;
 #else
     out["available"] = false;
 #endif
@@ -105,6 +107,14 @@ void QmlPlayerBridge::ps5Load() {
         i.ps5Form["remoteQuality"] = internet(L"quality", 1, 3);
         i.ps5Form["remoteCodec"] = internet(L"codec", 1, 2);
         i.ps5Form["remoteBitrate"] = internet(L"bitrate", 1, 7);
+        // The bit rate in whole Mbps (typed or slid, 2-100): [Stream] / [StreamInternet] mbps; a set saved with the
+        // old step index (5/10/15/20/30/50/80/100) reads as that step
+        const auto mbps = [&](const wchar_t* section, int index) {
+            const int v = int(GetPrivateProfileIntW(section, L"mbps", 0, ps5Settings().c_str()));
+            return v >= 2 && v <= 100 ? v : int(kPs5Bitrates[std::clamp(index, 0, 7)] / 1000);
+        };
+        i.ps5Form["bitrateMbps"] = mbps(L"Stream", i.ps5Form.value("bitrate").toInt());
+        i.ps5Form["remoteBitrateMbps"] = mbps(L"StreamInternet", i.ps5Form.value("remoteBitrate").toInt());
         i.ps5Form["remoteBitrateAuto"] = internet(L"bitrateAuto", 1, 1) != 0;
         // Yayın → Uyarlanabilir kalite (old adaptiveQuality), both sets. Not set by the user: off
         // at home, on over the internet (ps5Connect); the toggle shows the home value.
@@ -142,7 +152,23 @@ bool QmlPlayerBridge::ps5Set(const QString& key, const QVariant& value) {
 #ifdef OVIORA_ENABLE_REMOTEPLAY
             WritePrivateProfileStringW(home ? L"Stream" : L"StreamInternet", L"bitrateAuto", L"0", ps5Settings().c_str());
 #endif
+            // A step picked (older windows) is that step in whole Mbps, which the stream uses
+            const int stepMbps = int(kPs5Bitrates[std::clamp(n, 0, 7)] / 1000);
+            impl_->ps5Form[home ? QStringLiteral("bitrateMbps") : QStringLiteral("remoteBitrateMbps")] = stepMbps;
+#ifdef OVIORA_ENABLE_REMOTEPLAY
+            WritePrivateProfileStringW(home ? L"Stream" : L"StreamInternet", L"mbps", std::to_wstring(stepMbps).c_str(), ps5Settings().c_str());
+#endif
         }
+    } else if (key == QLatin1String("bitrateMbps") || key == QLatin1String("remoteBitrateMbps")) {
+        bool ok = false; const int n = value.toInt(&ok);
+        if (!ok || n < 2 || n > 100) return false;
+        const bool home = key == QLatin1String("bitrateMbps");
+        impl_->ps5Form[key] = n;
+        impl_->ps5Form[home ? QStringLiteral("bitrateAuto") : QStringLiteral("remoteBitrateAuto")] = false;
+#ifdef OVIORA_ENABLE_REMOTEPLAY
+        WritePrivateProfileStringW(home ? L"Stream" : L"StreamInternet", L"mbps", std::to_wstring(n).c_str(), ps5Settings().c_str());
+        WritePrivateProfileStringW(home ? L"Stream" : L"StreamInternet", L"bitrateAuto", L"0", ps5Settings().c_str());
+#endif
     } else if (key == QLatin1String("bitrateAuto") || key == QLatin1String("remoteBitrateAuto")) {
         impl_->ps5Form[key] = value.toBool();
 #ifdef OVIORA_ENABLE_REMOTEPLAY
@@ -195,7 +221,8 @@ remoteplay::VideoProfile ps5Video(const QVariantMap& f, bool internet = false) {
     // "Otomatik": at home the lib's preset rate for the resolution (10 Mbps at 720p, 15 at 1080p);
     // over the internet 8 Mbps, which a lossy long line carries with room to spare.
     const bool automatic = f.value(internet ? "remoteBitrateAuto" : "bitrateAuto").toBool();
-    p.bitrateKbps = automatic ? (internet ? 8000u : p.height == 1080 ? 15000u : 10000u) : kPs5Bitrates[std::clamp(value("bitrate", "remoteBitrate"), 0, 7)];
+    p.bitrateKbps = automatic ? (internet ? 8000u : p.height == 1080 ? 15000u : 10000u)
+                              : uint32_t(std::clamp(value("bitrateMbps", "remoteBitrateMbps"), 2, 100)) * 1000u;
     return p;
 }
 std::string asciiOnly(const QString& s) {
@@ -782,6 +809,15 @@ void QmlPlayerBridge::tickPs5() {
     tickStreamSession();
     auto& i = *impl_;
     bool changed = false;
+#ifdef OVIORA_ENABLE_REMOTEPLAY
+    // The pad's battery (Ctrl+O): looked at about every 2 s; a change refreshes ps5()
+    if (++i.padBatteryTick >= 120) {
+        i.padBatteryTick = 0;
+        const auto c = i.controller.capabilities();
+        const int key = c.connected ? c.battery * 2 + (c.charging ? 1 : 0) : -9;
+        if (key != i.padBatteryKey) { i.padBatteryKey = key; changed = true; }
+    }
+#endif
     if (i.ps5Busy && i.ps5Done.load()) {
         if (i.ps5Worker.joinable()) i.ps5Worker.join();
         i.ps5Busy = false;

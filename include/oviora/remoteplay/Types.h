@@ -78,12 +78,18 @@ struct PcmBlock {
 struct ControllerFeedback {
     bool rumble=false,triggers=false,motionReset=false;
     uint8_t left=0,right=0;
+    // The console's light bar colour and player number (1-4) for the pad
+    bool led=false,player=false;
+    std::array<uint8_t,3> ledColor{};
+    uint8_t playerIndex=0;
     std::array<uint8_t,11> leftTrigger{},rightTrigger{};
     std::vector<int16_t> haptics; // Stereo PCM 3kHz; hard cap 600 samples (100ms).
     void merge(ControllerFeedback next){
         if(next.rumble){rumble=true;left=next.left;right=next.right;}
         if(next.triggers){triggers=true;leftTrigger=next.leftTrigger;rightTrigger=next.rightTrigger;}
         motionReset|=next.motionReset;
+        if(next.led){led=true;ledColor=next.ledColor;}
+        if(next.player){player=true;playerIndex=next.playerIndex;}
         if(next.haptics.size()>600)next.haptics.resize(600);
         if(haptics.size()+next.haptics.size()>600)haptics.clear();
         haptics.insert(haptics.end(),next.haptics.begin(),next.haptics.end());

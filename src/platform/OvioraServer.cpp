@@ -53,7 +53,11 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <wlanapi.h>
 #endif
+#include <QElapsedTimer>
+#include <algorithm>
+#include <cmath>
 
 Q_LOGGING_CATEGORY(yakamozServer, "oviora.server")
 
@@ -99,20 +103,38 @@ OvioraServer::OvioraServer(Hooks hooks, QObject *parent)
 	poll_timer.setInterval(POLL_MS);
 	connect(&poll_timer, &QTimer::timeout, this, [this]() {
 		post("poll", { { "sid", session_id } }, [this](const QJsonObject &r, const QString &error) {
-			if(session_state != "playing" || !error.isEmpty() || !r.value("kick").toBool())
+			if(session_state != "playing" || !error.isEmpty())
 				return;
-			qCInfo(yakamozServer) << "The session was ended by the console's owner";
+			if(!r.value("kick").toBool())
+			{
+				takeSessionInfo(r);
+				return;
+			}
+			qCInfo(yakamozServer) << "The session was ended:" << r.value("reason").toString();
 			QString host = session_host;
 			endSession();
 			if(this->hooks.stop_session)
 				this->hooks.stop_session();
-			emit message(tr("Oturum sonlandırıldı"), host == user_name
+			// The server says why (time is up, sharing turned off, a newer session, ...); older servers did not
+			const QString why = r.value("text").toString().trimmed();
+			emit message(tr("Oturum sonlandırıldı"), !why.isEmpty() ? why : host == user_name
 				? tr("Oturum yönetim sitesinden kapatıldı.") : tr("%1 oturumu sonlandırdı.").arg(host));
 		});
 	});
 	// Friends, requests and who plays where change on other PCs: look again now and then
 	account_timer.setInterval(ACCOUNT_MS);
-	connect(&account_timer, &QTimer::timeout, this, &OvioraServer::refresh);
+	// While this PC streams, the account and groups are asked every third time (30 s); notifications (a friend's
+	// ask, a message) still every 10 s
+	connect(&account_timer, &QTimer::timeout, this, [this]() {
+		const bool streaming = this->hooks.session_active && this->hooks.session_active();
+		if(streaming && (++account_ticks % 3) != 0)
+		{
+			if(configured() && !token.isEmpty())
+				fetchEvents();
+			return;
+		}
+		refresh();
+	});
 	update_timer.setInterval(UPDATE_CHECK_MS);
 	connect(&update_timer, &QTimer::timeout, this, &OvioraServer::checkUpdate);
 	if(configured() && !token.isEmpty())
@@ -1495,6 +1517,230 @@ void OvioraServer::kick(const QString &sid)
 	accountCall("kick", { { "sid", sid } }, tr("Çıkarılamadı"));
 }
 
+// ---------------------------------------------------------------- connection test
+
+#ifdef _WIN32
+// The Wi-Fi this PC is connected with: band (from the channel), signal (%), link rate; empty when it is on a cable
+static QVariantMap wifiLink()
+{
+	QVariantMap out;
+	HANDLE client = nullptr;
+	DWORD version = 0;
+	if(WlanOpenHandle(2, nullptr, &version, &client) != ERROR_SUCCESS)
+		return out;
+	PWLAN_INTERFACE_INFO_LIST list = nullptr;
+	if(WlanEnumInterfaces(client, nullptr, &list) == ERROR_SUCCESS && list)
+	{
+		for(DWORD i = 0; i < list->dwNumberOfItems && out.isEmpty(); ++i)
+		{
+			const WLAN_INTERFACE_INFO &info = list->InterfaceInfo[i];
+			if(info.isState != wlan_interface_state_connected)
+				continue;
+			DWORD size = 0;
+			PWLAN_CONNECTION_ATTRIBUTES conn = nullptr;
+			if(WlanQueryInterface(client, &info.InterfaceGuid, wlan_intf_opcode_current_connection, nullptr, &size,
+					reinterpret_cast<PVOID *>(&conn), nullptr) != ERROR_SUCCESS || !conn)
+				continue;
+			out["signal"] = int(conn->wlanAssociationAttributes.wlanSignalQuality);
+			out["linkMbps"] = int(conn->wlanAssociationAttributes.ulRxRate / 1000);
+			WlanFreeMemory(conn);
+			ULONG *channel = nullptr;
+			if(WlanQueryInterface(client, &info.InterfaceGuid, wlan_intf_opcode_channel_number, nullptr, &size,
+					reinterpret_cast<PVOID *>(&channel), nullptr) == ERROR_SUCCESS && channel)
+			{
+				// 1-14: 2.4 GHz; 36-177: 5 GHz (6 GHz channels overlap these numbers and read as 5 GHz here)
+				out["band"] = *channel <= 14 ? QStringLiteral("2,4 GHz") : QStringLiteral("5 GHz");
+				WlanFreeMemory(channel);
+			}
+		}
+		WlanFreeMemory(list);
+	}
+	WlanCloseHandle(client, nullptr);
+	return out;
+}
+#endif
+
+void OvioraServer::runNetworkTest()
+{
+	if(network_test.value("state").toString() == "running" || !configured())
+		return;
+	network_test = { { "state", "running" } };
+#ifdef _WIN32
+	const QVariantMap wifi = wifiLink();
+	network_test["connection"] = wifi.isEmpty() ? "cable" : "wifi";
+	for(auto it = wifi.begin(); it != wifi.end(); ++it)
+		network_test[it.key()] = it.value();
+#else
+	network_test["connection"] = "unknown";
+#endif
+	emit networkTestChanged();
+	network_rtts.clear();
+	network_lost = 0;
+	networkPing(8);
+}
+
+void OvioraServer::networkPing(int left)
+{
+	if(left <= 0)
+		return finishNetworkTest();
+	auto *timer = new QElapsedTimer;
+	timer->start();
+	// Any answer of the server is a round trip (the action itself does not exist: it answers at once)
+	QNetworkReply *reply = post("net_test", {}, [this, timer, left](const QJsonObject &r, const QString &error) {
+		const double ms = timer->nsecsElapsed() / 1e6;
+		delete timer;
+		// An error answer of the server is a round trip too; no answer within 3 s is lost
+		if(r.value("http_status").toInt() > 0 || error.isEmpty())
+			network_rtts << ms;
+		else
+			++network_lost;
+		QTimer::singleShot(150, this, [this, left]() { networkPing(left - 1); });
+	});
+	if(reply)
+		QTimer::singleShot(3000, reply, [reply]() { if(reply->isRunning()) reply->abort(); });
+}
+
+void OvioraServer::finishNetworkTest()
+{
+	QVariantMap t = network_test;
+	QStringList advice;
+	double rtt = 0, jitter = 0;
+	if(!network_rtts.isEmpty())
+	{
+		QList<double> sorted = network_rtts;
+		std::sort(sorted.begin(), sorted.end());
+		rtt = sorted[sorted.size() / 2];
+		for(int i = 1; i < network_rtts.size(); ++i)
+			jitter += std::abs(network_rtts[i] - network_rtts[i - 1]);
+		if(network_rtts.size() > 1)
+			jitter /= network_rtts.size() - 1;
+	}
+	t["rttMs"] = qRound(rtt);
+	t["jitterMs"] = qRound(jitter);
+	t["lost"] = network_lost;
+	const bool wifi = t.value("connection").toString() == "wifi";
+	if(wifi && t.value("band").toString().startsWith("2,4"))
+		advice << tr("2,4 GHz Wi-Fi'ye bağlısın; varsa modemin 5 GHz ağına geç, akış belirgin şekilde düzelir.");
+	if(wifi && t.contains("signal") && t.value("signal").toInt() < 55)
+		advice << tr("Wi-Fi sinyali zayıf (%%1): modeme yaklaş ya da kablo kullan.").arg(t.value("signal").toInt());
+	if(network_rtts.isEmpty())
+		advice << tr("Oviora sunucusuna ulaşılamadı: internet bağlantın kopmuş ya da sunucu bir süreliğine kapalı olabilir.");
+	else
+	{
+		if(jitter > 15)
+			advice << tr("Bağlantı dalgalı (ortalama ±%1 ms): arka planda indirme, güncelleme ya da yayın varsa durdur.").arg(qRound(jitter));
+		if(rtt > 120)
+			advice << tr("İnternet gecikmesi yüksek (%1 ms); internet üzerinden oynarken 720p ve daha düşük bit hızı daha akıcı olur.").arg(qRound(rtt));
+		if(network_lost > 0)
+			advice << tr("%1 istek cevapsız kaldı; bağlantıda kopmalar olabilir.").arg(network_lost);
+	}
+	t["verdict"] = advice.isEmpty() ? tr("Bağlantın oyun için uygun görünüyor.") : tr("Akışı etkileyebilecek şeyler var:");
+	t["advice"] = advice;
+	t["state"] = "done";
+	network_test = t;
+	qCInfo(yakamozServer) << "network test" << t.value("connection").toString() << t.value("band").toString() << "signal" << t.value("signal").toInt()
+		<< "rtt" << t.value("rttMs").toInt() << "jitter" << t.value("jitterMs").toInt() << "lost" << network_lost;
+	emit networkTestChanged();
+}
+
+// ---------------------------------------------------------------- Sharing 2.0
+
+void OvioraServer::setShareRules(const QString &duid, const QString &friend_name, int limitMin, bool askFirst, const QVariantList &titles)
+{
+	if(test_psn_links && duid.startsWith(QLatin1String("test-")))
+		return;
+	QJsonArray list;
+	for(const QVariant &t : titles)
+	{
+		const QVariantMap m = t.toMap();
+		list.append(QJsonObject { { "id", m.value("id").toString() }, { "name", m.value("name").toString() } });
+	}
+	setBusy(true);
+	accountCall("share_rules", { { "duid", duid }, { "friend", friend_name }, { "limit_min", limitMin }, { "ask_first", askFirst }, { "titles", list } },
+		tr("Kurallar kaydedilemedi"));
+}
+
+void OvioraServer::loadOwnerTitles()
+{
+	const quint64 gen = auth_gen;
+	post("owner_titles", {}, [this, gen](const QJsonObject &r, const QString &error) {
+		if(gen != auth_gen || !error.isEmpty())
+			return;
+		owner_titles = r.value("titles").toArray().toVariantList();
+		emit ownerTitlesChanged();
+	});
+}
+
+void OvioraServer::answerAsk(int index, bool ok, int minutes)
+{
+	if(index < 0 || index >= pending_asks.size())
+		return;
+	const QVariantMap a = pending_asks.takeAt(index).toMap();
+	emit pendingAsksChanged();
+	const bool lease = a.value("kind").toString() == "lease";
+	post(lease ? "lease_answer" : "extend_answer",
+		lease ? QJsonObject { { "guest", a.value("guest").toString() }, { "duid", a.value("duid").toString() }, { "ok", ok } }
+			  : QJsonObject { { "session", a.value("sid").toString() }, { "ok", ok }, { "minutes", minutes } },
+		[this](const QJsonObject &, const QString &error) {
+			if(!error.isEmpty())
+				emit message(tr("Cevap gönderilemedi"), error);
+		});
+}
+
+void OvioraServer::askMoreTime()
+{
+	if(session_state != "playing")
+		return;
+	post("extend_ask", { { "sid", session_id } }, [this](const QJsonObject &, const QString &error) {
+		emit message(error.isEmpty() ? tr("Ek süre istendi") : tr("Ek süre istenemedi"),
+			error.isEmpty() ? tr("%1 kabul ederse süren uzayacak.").arg(session_host) : error);
+	});
+}
+
+void OvioraServer::cancelWaiting()
+{
+	if(session_state == "waiting")
+	{
+		session_duid.clear();
+		setSession("idle");
+	}
+}
+
+void OvioraServer::takeSessionInfo(const QJsonObject &r)
+{
+	const int remaining = r.contains("remaining_s") ? r.value("remaining_s").toInt() : -1;
+	QStringList games;
+	for(const QJsonValue &v : r.value("allowed_games").toArray())
+		games << v.toString();
+	const QVariantMap warning = r.value("game_warning").toObject().toVariantMap();
+	// A few minutes before the end, once each: 10, 5 and 1 minute left
+	for(const int mark : { 600, 300, 60 })
+		if(remaining > 0 && remaining <= mark && (session_warned == 0 || session_warned > mark))
+		{
+			session_warned = mark;
+			emit message(tr("Süre azalıyor"), tr("%1 dakikan kaldı. Ctrl+O > Ek süre iste ile %2'den süre isteyebilirsin.").arg(mark / 60).arg(session_host));
+			break;
+		}
+	if(remaining != session_remaining || games != session_allowed_games || warning != session_game_warning)
+	{
+		session_remaining = remaining;
+		session_allowed_games = games;
+		session_game_warning = warning;
+		emit sessionInfoChanged();
+	}
+}
+
+void OvioraServer::clearSessionInfo()
+{
+	session_warned = 0;
+	if(session_remaining == -1 && session_allowed_games.isEmpty() && session_game_warning.isEmpty())
+		return;
+	session_remaining = -1;
+	session_allowed_games.clear();
+	session_game_warning.clear();
+	emit sessionInfoChanged();
+}
+
 // ---------------------------------------------------------------- sessions
 
 void OvioraServer::setSession(const QString &state)
@@ -1522,6 +1768,30 @@ void OvioraServer::lease(bool retry)
 	// "relay": this app can let the server make the PSN requests (S2): the owner's token never comes here.
 	// The server picks the PSN account the PS5 is on (several can be linked): account_id and token are that one's.
 	post("lease", { { "host", session_host }, { "duid", session_duid }, { "sid", session_id }, { "relay", 1 } }, [this, retry](const QJsonObject &r, const QString &error) {
+		// The owner says yes each time (Sharing 2.0): wait for it, asking again every 5 s (an answer event also
+		// asks at once) for at most 10 minutes; Vazgeç (cancelWaiting) stops it
+		if(!error.isEmpty() && r.value("ask_wait").toBool())
+		{
+			if(session_state != "waiting")
+			{
+				waiting_since = QDateTime::currentMSecsSinceEpoch();
+				setSession("waiting");
+				emit message(tr("Onay istendi"), error);
+			}
+			if(QDateTime::currentMSecsSinceEpoch() - waiting_since > 10 * 60 * 1000)
+			{
+				setSession("idle");
+				emit message(tr("Bağlanılamadı"), tr("%1 isteğine cevap vermedi.").arg(session_host));
+				return;
+			}
+			QTimer::singleShot(5000, this, [this]() {
+				if(session_state == "waiting")
+					lease(false);
+			});
+			return;
+		}
+		if(session_state == "waiting" && !error.isEmpty())
+			setSession("asking");
 		// 409: the PS5 moved to another of the owner's PSN accounts during the lease; once more
 		if(!error.isEmpty() && !retry && r.value("http_status").toInt() == 409)
 		{
@@ -1535,6 +1805,7 @@ void OvioraServer::lease(bool retry)
 			refresh();
 			return;
 		}
+		clearSessionInfo();
 		setSession("playing");
 		poll_timer.start();
 		refresh();
@@ -1547,6 +1818,7 @@ void OvioraServer::lease(bool retry)
 void OvioraServer::endSession()
 {
 	poll_timer.stop();
+	clearSessionInfo();
 	if(session_state == "playing")
 		post("ended", { { "sid", session_id } }, [this](const QJsonObject &, const QString &) { refresh(); });
 	session_duid.clear();
@@ -2336,6 +2608,52 @@ void OvioraServer::takeEvent(const QJsonObject &e, bool announce)
 		text = tr("%1 seni %2 grubuna ekledi.").arg(eventField(e, "by"), eventField(e, "group_name"));
 		// The new group in the list (and its members' keys for messages) at once
 		fetchGroups();
+	}
+	else if(type == "lease_ask" || type == "extend_ask")
+	{
+		const bool lease = type == "lease_ask";
+		title = lease ? tr("Bağlanma isteği") : tr("Ek süre isteği");
+		text = lease ? tr("%1, %2 adlı PS5'ine bağlanmak istiyor.").arg(eventField(e, "guest"), eventField(e, "console"))
+					 : tr("%1, %2 adlı PS5'inde ek süre istiyor.").arg(eventField(e, "guest"), eventField(e, "console"));
+		// Asks of the last 10 minutes wait for an answer in the window (older ones the server forgot)
+		qint64 t = qint64(e.value("t").toDouble());
+		if(t > 0 && t < 100000000000LL)
+			t *= 1000;
+		if(t <= 0 || QDateTime::currentMSecsSinceEpoch() - t < 10 * 60 * 1000)
+		{
+			const QString key = type + "/" + eventField(e, "guest") + "/" + eventField(e, lease ? "duid" : "sid");
+			bool known = false;
+			for(const QVariant &v : pending_asks)
+				known = known || v.toMap().value("key").toString() == key;
+			if(!known)
+			{
+				pending_asks.append(QVariantMap { { "key", key }, { "kind", lease ? "lease" : "extend" }, { "guest", eventField(e, "guest") },
+					{ "console", eventField(e, "console") }, { "duid", eventField(e, "duid") }, { "sid", eventField(e, "sid") } });
+				emit pendingAsksChanged();
+			}
+		}
+	}
+	else if(type == "lease_answer")
+	{
+		const bool ok = eventField(e, "ok") == "true" || eventField(e, "ok") == "1";
+		title = ok ? tr("İzin verildi") : tr("İzin verilmedi");
+		text = ok ? tr("%1 bağlanmana izin verdi.").arg(eventField(e, "owner")) : tr("%1 bu sefer izin vermedi.").arg(eventField(e, "owner"));
+		// Waiting for it: ask again now rather than in up to 5 s
+		if(session_state == "waiting")
+			lease(false);
+	}
+	else if(type == "extend_answer")
+	{
+		const bool ok = eventField(e, "ok") == "true" || eventField(e, "ok") == "1";
+		title = ok ? tr("Ek süre verildi") : tr("Ek süre verilmedi");
+		text = ok ? tr("%1 sana %2 dakika daha verdi.").arg(eventField(e, "owner"), eventField(e, "minutes")) : tr("%1 ek süre vermedi.").arg(eventField(e, "owner"));
+		session_warned = 0;
+	}
+	else if(type == "session_rule")
+	{
+		title = tr("Oturum kapandı");
+		text = eventField(e, "reason") == "game" ? tr("%1, izin vermediğin bir oyunu açtığı için %2 oturumu kapandı.").arg(eventField(e, "guest"), eventField(e, "console"))
+												 : tr("%1 için verdiğin süre doldu; %2 oturumu kapandı.").arg(eventField(e, "guest"), eventField(e, "console"));
 	}
 	else if(type == "kicked")
 	{

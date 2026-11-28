@@ -7,7 +7,7 @@ import Oviora
 // saved Oviora-wide). LAN connects use the home set, PSN / internet connects the internet one:
 //   quality / remoteQuality 0..3 = 720p30 / 720p60 / 1080p30 / 1080p60 (resolution and frame rate rows),
 //   codec / remoteCodec 0..2 = H.264 / H.265 / H.265 HDR,
-//   bitrate / remoteBitrate index 0..7 = 5/10/15/20/30/50/80/100 Mbps,
+//   bitrateMbps / remoteBitrateMbps = whole Mbps 2..100 (typed or slid; the old step index bitrate is kept in step),
 //   bitrateAuto / remoteBitrateAuto = the old "Otomatik": 10 Mbps at 720p, 15 at 1080p (internet:
 //   8 Mbps), back on whenever the resolution changes.
 //   The internet set's "Uzak bağlantı" defaults: 1080p, 30 fps, H.265, automatic bit rate.
@@ -31,10 +31,10 @@ SettingsPage {
         readonly property int resolution: quality >= 2 ? 1 : 0     // 0: 720p, 1: 1080p
         readonly property int fps: quality % 2                     // 0: 30, 1: 60
         readonly property bool automatic: stored("bitrateAuto", true) === true
-        // The old app's automatic rate for 720p and 1080p (index 1 = 10 Mbps, 2 = 15 Mbps);
-        // over the internet 8 Mbps at any resolution (the slider rests at it, between 5 and 10)
+        // The old app's automatic rate: 10 Mbps at 720p, 15 at 1080p; over the internet 8 Mbps at any resolution
         readonly property int autoBitrate: remote ? 8 : resolution ? 15 : 10
-        readonly property int bitrate: automatic ? (resolution && !remote ? 2 : 1) : stored("bitrate", remote ? 1 : 2)
+        // Whole Mbps, 2-100 (the slider and the typed number); automatic shows the automatic rate
+        readonly property int mbps: automatic ? autoBitrate : stored("bitrateMbps", remote ? 10 : 15)
         readonly property string defaultResolution: remote ? "720p" : "1080p"
 
         SettingRow {
@@ -70,17 +70,39 @@ SettingsPage {
             RowLayout {
                 spacing: 8
                 ValueSlider {
-                    implicitWidth: 300
-                    valueWidth: 82
-                    from: 0
-                    to: page.bitrates.length - 1
+                    implicitWidth: 240
+                    valueWidth: 0
+                    from: 2
+                    to: 100
                     stepSize: 1
-                    snapMode: Slider.SnapAlways
-                    // Automatic over the internet is 8 Mbps, between the 5 and 10 steps: the knob rests there
-                    // (60 % of the way; snapping only applies when the user drags it)
-                    value: qc.automatic && qc.remote ? (qc.autoBitrate - page.bitrates[0]) / (page.bitrates[1] - page.bitrates[0]) : qc.bitrate
-                    valueText: (qc.automatic ? qc.autoBitrate : page.bitrates[Math.round(value)]) + " Mbps"
-                    onMoved: oviora.ps5Set(qc.key("bitrate"), Math.round(value))
+                    value: qc.mbps
+                    valueText: ""
+                    onMoved: oviora.ps5Set(qc.key("bitrateMbps"), Math.round(value))
+                }
+                // Any whole number from 2 to 100 typed in (Enter or leaving the box saves it)
+                InputField {
+                    id: mbpsField
+                    implicitWidth: 64
+                    horizontalAlignment: TextInput.AlignHCenter
+                    leftPadding: 8
+                    rightPadding: 8
+                    text: String(qc.mbps)
+                    validator: IntValidator { bottom: 1; top: 100 }
+                    invalid: acceptableInput && (Number(text) < 2 || Number(text) > 100)
+                    function save() {
+                        const n = Number(text)
+                        if (n >= 2 && n <= 100 && n !== qc.mbps) oviora.ps5Set(qc.key("bitrateMbps"), n)
+                        else text = String(qc.mbps)
+                    }
+                    onAccepted: save()
+                    onActiveFocusChanged: if (!activeFocus) save()
+                }
+                Label {
+                    textFormat: Text.PlainText
+                    text: "Mbps"
+                    font.family: Tema.body
+                    font.pixelSize: 15
+                    color: Tema.muted
                 }
                 PillButton {
                     compact: true

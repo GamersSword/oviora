@@ -28,7 +28,19 @@ class OvioraServer : public QObject
 	Q_PROPERTY(bool configured READ configured NOTIFY changed)
 	Q_PROPERTY(QString user READ user NOTIFY changed)
 	Q_PROPERTY(QString status READ status NOTIFY changed)          // none, active
-	Q_PROPERTY(QString sessionState READ sessionState NOTIFY changed) // idle, asking, playing
+	Q_PROPERTY(QString sessionState READ sessionState NOTIFY changed) // idle, asking, waiting (for the owner's yes), playing
+	// Sharing 2.0, the guest's side of the session going on: seconds left (-1: no limit), the games allowed ([]: any)
+	// and, while another game runs, {current, allowed, seconds_left}
+	Q_PROPERTY(int sessionRemaining READ sessionRemaining NOTIFY sessionInfoChanged)
+	Q_PROPERTY(QStringList sessionAllowedGames READ sessionAllowedGames NOTIFY sessionInfoChanged)
+	Q_PROPERTY(QVariantMap sessionGameWarning READ sessionGameWarning NOTIFY sessionInfoChanged)
+	// The owner's side: friends asking to connect or for more time [{kind: lease|extend, guest, console, duid, sid}]
+	Q_PROPERTY(QVariantList pendingAsks READ pendingAsks NOTIFY pendingAsksChanged)
+	// Games seen on this user's PS5s, newest first [{id, name}]: what the share rules offer
+	Q_PROPERTY(QVariantList ownerTitles READ ownerTitles NOTIFY ownerTitlesChanged)
+	// Ayarlar > Ses ve ağ > Bağlantı testi: {state: ""|running|done, connection: wifi|cable|unknown, band, signal, linkMbps,
+	// rttMs, jitterMs, lost, verdict, advice: [text]}
+	Q_PROPERTY(QVariantMap networkTest READ networkTest NOTIFY networkTestChanged)
 	Q_PROPERTY(QString sessionDuid READ sessionDuid NOTIFY changed)
 	// From the server's account view
 	Q_PROPERTY(bool loaded READ loaded NOTIFY accountChanged)
@@ -99,6 +111,12 @@ public:
 	QString user() const { return user_name; }
 	QString status() const { return account_status; }
 	QString sessionState() const { return session_state; }
+	int sessionRemaining() const { return session_remaining; }
+	QStringList sessionAllowedGames() const { return session_allowed_games; }
+	QVariantMap sessionGameWarning() const { return session_game_warning; }
+	QVariantList pendingAsks() const { return pending_asks; }
+	QVariantList ownerTitles() const { return owner_titles; }
+	QVariantMap networkTest() const { return network_test; }
 	QString sessionDuid() const { return session_duid; }
 	bool loaded() const { return account.contains("user"); }
 	bool isBusy() const { return busy; }
@@ -224,6 +242,16 @@ public:
 	Q_INVOKABLE void setShare(const QString &duid, const QString &friend_name, bool on);
 	/** Ends someone's session on one of my PS5s; they lose access to it until I share it again */
 	Q_INVOKABLE void kick(const QString &sid);
+	/** Sharing 2.0: the owner's rules for a friend on a console (limit 0/30/60/120/180 min; titles [{id, name}]) */
+	Q_INVOKABLE void setShareRules(const QString &duid, const QString &friend_name, int limitMin, bool askFirst, const QVariantList &titles);
+	Q_INVOKABLE void loadOwnerTitles();
+	/** The owner answers pendingAsks[index]: a lease (ok) or more time (ok, minutes 30/60) */
+	Q_INVOKABLE void answerAsk(int index, bool ok, int minutes = 30);
+	/** The guest asks the owner for more time in this session */
+	Q_INVOKABLE void askMoreTime();
+	/** The guest stops waiting for the owner's yes */
+	Q_INVOKABLE void cancelWaiting();
+	Q_INVOKABLE void runNetworkTest();
 	Q_INVOKABLE void connectTo(const QString &host, const QString &duid);
 	Q_INVOKABLE void checkUpdate();
 	/** Moves the downloaded files in place and starts the new Yakamoz */
@@ -277,6 +305,10 @@ signals:
 	void groupCreated(int id);
 	/** A new event while the window is in front: shown as an in-app toast */
 	void toast(const QString &title, const QString &text);
+	void sessionInfoChanged();
+	void pendingAsksChanged();
+	void ownerTitlesChanged();
+	void networkTestChanged();
 
 private:
 	using Callback = std::function<void(const QJsonObject &reply, const QString &error)>;
@@ -373,6 +405,20 @@ private:
 	bool busy = false;
 	QString session_state = "idle", session_id, session_host, session_duid;
 	QTimer poll_timer, account_timer, update_timer;
+	// Sharing 2.0
+	int session_remaining = -1, session_warned = 0;
+	QStringList session_allowed_games;
+	QVariantMap session_game_warning;
+	QVariantList pending_asks, owner_titles;
+	qint64 waiting_since = 0;
+	int account_ticks = 0;
+	QVariantMap network_test;
+	QList<double> network_rtts;
+	int network_lost = 0;
+	void networkPing(int left);
+	void finishNetworkTest();
+	void takeSessionInfo(const QJsonObject &poll);
+	void clearSessionInfo();
 
 	QString update_state = "none", update_text, update_version, update_notes;
 	bool update_required = false;

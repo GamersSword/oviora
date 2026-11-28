@@ -98,9 +98,49 @@ SettingsPage {
                 onToggled: oviora.setPreference("padBackground", checked)
             }
         }
+        SettingRow {
+            title: qsTr("Eski kumandalar")
+            help: qsTr("Tanınmayan eski veya markasız bir USB kumandan varsa aç. DualSense, DualShock 4, Xbox ve Switch kumandaları buna gerek duymaz. Açılışı biraz yavaşlatabilir; Oviora yeniden açılınca geçerli olur.")
+            Toggle {
+                checked: oviora.preferences.legacyPads === true
+                onToggled: oviora.setPreference("legacyPads", checked)
+            }
+        }
     }
 
     // Rumble and haptics strength (old: rumbleHapticsIntensity, hapticOverride); Steam Deck hidden
+    // Gyro aim: the pad's turn moves the right stick (games without gyro aim of their own)
+    SettingsCard {
+        title: qsTr("Jiroskopla nişan")
+        description: qsTr("Kumandayı hafifçe çevirerek nişan al; oyunun kendi jiroskop desteği olmasa da çalışır. Sağ çubuk da çalışmaya devam eder.")
+
+        SettingRow {
+            title: qsTr("Ne zaman")
+            help: qsTr("L2 basılıyken: yalnız nişan alırken. Her zaman: kumanda her döndüğünde görüş de döner.")
+            Dropdown {
+                implicitWidth: 220
+                readonly property var ids: ["off", "l2", "always"]
+                model: [qsTr("Kapalı"), qsTr("L2 basılıyken"), qsTr("Her zaman")]
+                currentIndex: Math.max(0, ids.indexOf(oviora.preferences.gyroAim || "off"))
+                onActivated: (index) => oviora.setPreference("gyroAim", ids[index])
+            }
+        }
+        SettingRow {
+            title: qsTr("Hassasiyet")
+            enabled: (oviora.preferences.gyroAim || "off") !== "off"
+            ValueSlider {
+                implicitWidth: 320
+                valueWidth: 110
+                from: 0.2
+                to: 4
+                stepSize: 0.1
+                value: (oviora.preferences.gyroAimSens !== undefined ? oviora.preferences.gyroAimSens : 10) / 10
+                valueText: value.toFixed(1) + "x"
+                onMoved: oviora.setPreference("gyroAimSens", Math.round(value * 10))
+            }
+        }
+    }
+
     SettingsCard {
         title: qsTr("Titreşim")
         description: qsTr("Oyunların gönderdiği titreşimin kumandanda ne kadar güçlü hissedileceği.")

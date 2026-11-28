@@ -222,6 +222,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
 	takion->log = info->log;
 	takion->close_socket = info->close_socket;
 	takion->version = info->protocol_version;
+	takion->av_reorder_timeout_us = info->av_reorder_timeout_us ? info->av_reorder_timeout_us : TAKION_AV_REORDER_TIMEOUT_US;
 	takion->disable_audio_video = info->disable_audio_video;
 
 	switch(takion->version)
@@ -1060,7 +1061,7 @@ static void takion_av_queue_flush_with_timeout(ChiakiTakion *takion, ChiakiReord
 			break;
 		}
 
-		if(now - *head_wait_start_us <= TAKION_AV_REORDER_TIMEOUT_US)
+		if(now - *head_wait_start_us <= (int64_t)takion->av_reorder_timeout_us)
 			break;
 
 		// Timeout exceeded: skip directly to the first buffered packet so startup
@@ -1110,7 +1111,7 @@ static uint64_t takion_av_queues_next_timeout_ms(ChiakiTakion *takion)
 		if(head_wait_start_us == 0)
 			continue;
 
-		int64_t remaining_us = TAKION_AV_REORDER_TIMEOUT_US - (now - head_wait_start_us);
+		int64_t remaining_us = (int64_t)takion->av_reorder_timeout_us - (now - head_wait_start_us);
 		if(remaining_us <= 0)
 			return 0;
 

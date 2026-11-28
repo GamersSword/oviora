@@ -169,6 +169,7 @@ private:
     bool paddleFailed = false;
     double detectScale = 1.0; // the detector's input size for the current picture
     QImage prevGray;          // the middle band (or the region) at the last read
+    std::vector<uint8_t> prevRawSig;   // a sparse look at the raw region at the last sample
     qint64 lastReadMs = 0;
     struct LastRead { QString text; QRectF box; int lines = 0; QVariantList rows; double score = 0; } last;
     bool hasLast = false;
@@ -303,6 +304,35 @@ void Worker::process(const engine::SubtitleSample &sample, const Params &p)
     if (!ensurePaddle())
         return;
     const int frameW = int(sample.frameWidth), frameH = int(sample.frameHeight);
+    // First a cheap look at the raw pixels (every 4th row, every 8th pixel, one byte each): when the whole region
+    // is as it was, the conversion, the scaling and the band check below are skipped too (25 samples a second
+    // while subtitles are on, most of them the same picture). The re-read times of the band check still hold.
+    {
+        const size_t stride = size_t(sample.width) * sample.bytesPerPixel;
+        if (sample.bytesPerPixel >= 2 && sample.pixels.size() >= stride * sample.height) {
+            std::vector<uint8_t> sig;
+            sig.reserve(size_t(sample.height / 4 + 1) * (sample.width / 8 + 1));
+            for (uint32_t y = 0; y < sample.height; y += 4) {
+                const uint8_t *row = sample.pixels.data() + size_t(y) * stride;
+                for (uint32_t x = 0; x < sample.width; x += 8)
+                    sig.push_back(row[size_t(x) * sample.bytesPerPixel + 1]);
+            }
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            const qint64 maxReuseMs = hasLast && !last.text.isEmpty() ? 450 : 2000;
+            if (!sig.empty() && sig.size() == prevRawSig.size() && nowMs - lastReadMs < maxReuseMs) {
+                size_t diff = 0;
+                for (size_t k = 0; k < sig.size(); ++k)
+                    diff += std::abs(int(sig[k]) - int(prevRawSig[k])) > 40;
+                if (diff < sig.size() / 400 + 1) {
+                    counters.unchanged++;
+                    if (hasLast)
+                        emit ocrResult(last.text, frameW, frameH, last.box, last.lines, last.rows, nowMs, last.score, false);
+                    return;
+                }
+            }
+            prevRawSig = std::move(sig);
+        }
+    }
     const QRect crop(int(sample.x), int(sample.y), int(sample.width), int(sample.height));
     QImage rgb = toRgb(sample);
     if (rgb.isNull())
@@ -1451,6 +1481,14 @@ void SubtitleTranslator::openCorrection()
     emit correctionRequested(displayedSource, translatedText);
 }
 
+void SubtitleTranslator::correctLine(const QString &english, const QString &translation)
+{
+    if (english.trimmed().isEmpty())
+        return;
+    tmVariantsFor = english;
+    emit correctionRequested(english, translation);
+}
+
 void SubtitleTranslator::loadVariants(const QString &english)
 {
     tmVariantsFor = english;
@@ -1492,6 +1530,11 @@ void SubtitleTranslator::pollStream()
     streamingFlag = live;
     logInfo(QStringLiteral("stream %1 (picture %2x%3)").arg(live ? QStringLiteral("running") : QStringLiteral("ended"))
                 .arg(frameSize.width()).arg(frameSize.height()));
+    // A new stream starts a new list of lines
+    if (live && !lineHistory.isEmpty()) {
+        lineHistory.clear();
+        emit historyChanged();
+    }
     if (live) {
         warmConnection();
         warmTimer->start();
@@ -1552,6 +1595,17 @@ void SubtitleTranslator::setDisplay(const QString &source, const QString &transl
 {
     if (source == displayedSource && translation == translatedText && box == displayBox)
         return;
+    // History of the lines read (a line that only got its translation late replaces its own entry)
+    if (!source.trimmed().isEmpty() && !translation.trimmed().isEmpty()) {
+        const bool same = !lineHistory.isEmpty() && lineHistory.first().toMap().value(QStringLiteral("en")).toString() == source;
+        if (same)
+            lineHistory.removeFirst();
+        lineHistory.prepend(QVariantMap{{QStringLiteral("en"), source}, {QStringLiteral("tr"), translation},
+                                        {QStringLiteral("at"), QDateTime::currentMSecsSinceEpoch()}});
+        while (lineHistory.size() > 40)
+            lineHistory.removeLast();
+        emit historyChanged();
+    }
     displayedSource = source;
     translatedText = translation;
     displayBox = box;

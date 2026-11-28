@@ -616,6 +616,13 @@ Window {
         streamMenuLoader.active = true
         return streamMenuLoader.item
     }
+    // Testing: --dialog streammenu opens the stream menu (Ctrl+O) on the home screen, so its rows load
+    Timer {
+        interval: 5000
+        running: root.test.dialog === "streammenu"
+        // --section <name> with it: that part of the menu (e.g. subs)
+        onTriggered: { const m = root.ensureStreamMenu(); if (m) { m.open(); if (root.test.section) m.section = root.test.section } }
+    }
     // "Düzelt": the subtitle line on screen, corrected in the shared translation memory
     Loader {
         id: subtitleFixLoader
@@ -765,19 +772,90 @@ Window {
         }
         function onOverlayChanged() { root.updateSubtitleGame() }
     }
+    // The running game { id: PS5 title id, name } of the stream ({ id: "" } when not known). On this network from
+    // the console's own report (discovery), over PSN from what the Oviora server knows about the console (the
+    // owner's app on the home network, or PSN game info)
+    readonly property var currentGame: {
+        let id = "", name = ""
+        const havePlatform = typeof platform !== "undefined" && platform
+        if (havePlatform && platform.sessionState === "playing" && platform.sessionDuid) {
+            for (const list of [platform.available || [], platform.consoles || []])
+                for (const c of list)
+                    if (c && c.duid === platform.sessionDuid && c.app) {
+                        id = c.app.title_id || ""
+                        name = c.app.name || ""
+                    }
+            if (!id) id = platform.runningTitleId(platform.sessionDuid)
+        } else {
+            const host = (oviora.ps5 && oviora.ps5.host) || ""
+            for (const c of (oviora.lanConsoles || []))
+                if (host && c && c.address === host) {
+                    id = c.titleId || (c.duid && havePlatform ? platform.runningTitleId(c.duid) : "")
+                    name = c.app || ""
+                }
+        }
+        id = String(id || "").split("_")[0].toUpperCase()
+        return /^[A-Z]{4}[0-9]{5}$/.test(id) ? { id: id, name: name || id } : { id: "", name: "" }
+    }
+    onCurrentGameChanged: { root.updateSubtitleGame(); root.applyGameProfile() }
     // The running game's title id: the shared memory keeps lines per game ("genel" when unknown)
     function updateSubtitleGame() {
         if (!subtitles.streaming) return
-        // From this network's discovery (the console reports its running game), else what the
-        // Oviora server knows about the console
-        const host = (oviora.ps5 && oviora.ps5.host) || ""
-        let title = ""
-        for (const c of (oviora.lanConsoles || [])) {
-            if (host && c && c.address === host)
-                title = c.titleId || (c.duid ? platform.runningTitleId(c.duid) : "")
-        }
-        subtitles.game = title
+        subtitles.game = root.currentGame.id
     }
+    // Per-game profiles (Ctrl+O > Bu oyun için kaydet): the subtitle area, the picture preset and the mouse
+    // aim settings, loaded when that game starts or comes back during a stream
+    property string gameProfileApplied: ""
+    readonly property var gameProfile: (oviora.preferences && oviora.preferences.gameProfiles && root.currentGame.id)
+        ? (oviora.preferences.gameProfiles[root.currentGame.id] || null) : null
+    function applyGameProfile() {
+        const g = root.currentGame
+        if (!oviora.hasSource || !g.id || g.id === root.gameProfileApplied) return
+        root.gameProfileApplied = g.id
+        const p = root.gameProfile
+        if (!p) return
+        if (p.subtitle && subtitles.config)
+            for (const k of ["regionX", "regionY", "regionW", "regionH"])
+                if (p.subtitle[k] !== undefined) subtitles.config[k] = p.subtitle[k]
+        if (p.preset) {
+            const preset = (oviora.presets || []).find(x => x.name === p.preset)
+            if (preset && oviora.currentPresetName !== p.preset) oviora.applyPresetIndex(preset.index)
+        }
+        if (p.mouseAim) oviora.setPreference("mouseAim", p.mouseAim)
+        toast.show(qsTr("%1 için kaydettiğin ayarlar yüklendi").arg(p.name || g.name), false)
+        oviora.logUi("game-profile", "applied " + g.id)
+    }
+    function saveGameProfile() {
+        const g = root.currentGame
+        if (!g.id) return
+        const all = Object.assign({}, (oviora.preferences && oviora.preferences.gameProfiles) || {})
+        const p = { name: g.name }
+        if (subtitles.config && subtitles.config.regionW > 0)
+            p.subtitle = { regionX: subtitles.config.regionX, regionY: subtitles.config.regionY,
+                           regionW: subtitles.config.regionW, regionH: subtitles.config.regionH }
+        if (oviora.currentPresetName) p.preset = oviora.currentPresetName
+        if (oviora.preferences && oviora.preferences.mouseAim) p.mouseAim = oviora.preferences.mouseAim
+        all[g.id] = p
+        if (Object.keys(all).length > 50) {
+            toast.show(qsTr("En çok 50 oyun için ayar saklanabilir"), true)
+            return
+        }
+        if (oviora.setPreference("gameProfiles", all)) {
+            root.gameProfileApplied = g.id
+            toast.show(qsTr("%1 için ayarlar kaydedildi: altyazı alanı, görüntü ayarı, fare").arg(g.name), false)
+        }
+    }
+    function forgetGameProfile() {
+        const g = root.currentGame
+        const all = Object.assign({}, (oviora.preferences && oviora.preferences.gameProfiles) || {})
+        if (!g.id || !all[g.id]) return
+        delete all[g.id]
+        if (oviora.setPreference("gameProfiles", all))
+            toast.show(qsTr("%1 için kayıtlı ayarlar silindi").arg(g.name), false)
+    }
+    // A new stream loads its game's profile again
+    readonly property bool profileStream: oviora.hasSource
+    onProfileStreamChanged: { if (!profileStream) root.gameProfileApplied = ""; else root.applyGameProfile() }
     Connections {
         target: oviora
         function onPs5Changed() { root.updateSubtitleGame() }
@@ -1044,6 +1122,145 @@ Window {
         onWantedChanged: oviora.setStatsOverlayShown(wanted)
         Component.onCompleted: oviora.setStatsOverlayShown(wanted)
     }
+    // End of a stream: a short summary on the home screen (length, frames, loss, delay) with a plain verdict and,
+    // when something held it back, what helps. Sampled every 2 s while the stream is on screen.
+    QtObject {
+        id: sessionStats
+        property bool on: false
+        property real startedAt: 0
+        property int samples: 0
+        property real fpsSum: 0
+        property real lossSum: 0
+        property real lossMax: 0
+        property real rttSum: 0
+        property int rttCount: 0
+        property int weakSamples: 0
+        property real requestedFps: 0
+        property bool internet: false
+        function reset() { on = true; startedAt = Date.now(); samples = 0; fpsSum = 0; lossSum = 0; lossMax = 0; rttSum = 0; rttCount = 0; weakSamples = 0 }
+    }
+    Timer {
+        interval: 2000
+        repeat: true
+        running: root.liveStats.active === true
+        onRunningChanged: {
+            if (running) { sessionStats.reset(); summaryCard.data_ = null; return }
+            // Over: a summary when it lasted at least a minute
+            if (sessionStats.on && sessionStats.samples >= 30) summaryCard.show()
+            sessionStats.on = false
+        }
+        onTriggered: {
+            const s = root.liveStats
+            sessionStats.samples++
+            sessionStats.fpsSum += s.fps || 0
+            const loss = s.packetLoss || 0
+            sessionStats.lossSum += loss
+            sessionStats.lossMax = Math.max(sessionStats.lossMax, loss)
+            if (loss > 0.03) sessionStats.weakSamples++
+            if ((s.rttMs || 0) > 0) { sessionStats.rttSum += s.rttMs; sessionStats.rttCount++ }
+            sessionStats.requestedFps = s.requestedFps || sessionStats.requestedFps
+            sessionStats.internet = s.internet === true
+        }
+    }
+    Rectangle {
+        id: summaryCard
+        objectName: "session-summary"
+        property var data_: null
+        function show() {
+            const n = Math.max(1, sessionStats.samples)
+            const fps = sessionStats.fpsSum / n, loss = sessionStats.lossSum / n
+            const rtt = sessionStats.rttCount ? sessionStats.rttSum / sessionStats.rttCount : 0
+            const minutes = Math.max(1, Math.round((Date.now() - sessionStats.startedAt) / 60000))
+            const weakShare = sessionStats.weakSamples / n
+            let verdict = qsTr("Bağlantın sorunsuzdu."), advice = ""
+            if (weakShare > 0.1 || loss > 0.03) {
+                verdict = qsTr("Takılmaların çoğu ağdan geldi: oyunun %1'inde paket kaybı vardı.").arg("%" + Math.round(weakShare * 100))
+                advice = sessionStats.internet
+                    ? qsTr("Öneri: Yayın ayarlarında bit hızını düşür ya da 720p'ye geç; mümkünse Wi-Fi yerine kablo kullan.")
+                    : qsTr("Öneri: PS5'i kabloyla bağla ya da 5 GHz Wi-Fi kullan; modemle arasındaki mesafeyi kısalt.")
+            } else if (rtt > 80) {
+                verdict = qsTr("Gecikme yüksekti (ortalama %1 ms).").arg(Math.round(rtt))
+                advice = qsTr("Öneri: İnternet üzerinden oynarken bu normaldir; aynı ağda olduğunda gecikme düşer. Arka planda indirme varsa durdur.")
+            } else if (sessionStats.requestedFps > 0 && fps < sessionStats.requestedFps * 0.85) {
+                verdict = qsTr("Ağ iyiydi ama görüntü bu bilgisayarda yavaş işlendi (ortalama %1 fps).").arg(Math.round(fps))
+                advice = qsTr("Öneri: Görüntü ayarlarında iyileştirmeyi ya da ara kare üretimini bir kademe düşür.")
+            }
+            data_ = { minutes: minutes, fps: fps, loss: loss, rtt: rtt, verdict: verdict, advice: advice }
+            summaryHide.restart()
+            oviora.logUi("session-summary", "minutes=" + minutes + " fps=" + fps.toFixed(1) + " loss=" + (loss * 100).toFixed(2) + "% rtt=" + Math.round(rtt))
+        }
+        Timer { id: summaryHide; interval: 30000; onTriggered: summaryCard.data_ = null }
+        // --dialog summary (test runs): a sample summary of a lossy internet stream
+        Timer {
+            interval: 4000
+            running: root.test.dialog === "summary"
+            onTriggered: summaryCard.data_ = { minutes: 47, fps: 58.6, loss: 0.052, rtt: 64,
+                verdict: qsTr("Takılmaların çoğu ağdan geldi: oyunun %1'inde paket kaybı vardı.").arg("%18"),
+                advice: qsTr("Öneri: Yayın ayarlarında bit hızını düşür ya da 720p'ye geç; mümkünse Wi-Fi yerine kablo kullan.") }
+        }
+        z: 470
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 28
+        width: Math.min(560, parent.width - 48)
+        height: summaryColumn.implicitHeight + 32
+        radius: Tema.radiusPanel
+        color: Tema.surface
+        border.width: 1
+        border.color: Tema.lineStrong
+        opacity: data_ && root.page !== "min" ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+        ColumnLayout {
+            id: summaryColumn
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 6
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    text: qsTr("Oyun özeti")
+                    font.family: Tema.body
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
+                    color: Tema.text
+                }
+                VButton { text: qsTr("Tamam"); onClicked: summaryCard.data_ = null }
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: summaryCard.data_ ? qsTr("%1 dk · ortalama %2 fps · paket kaybı %3 · gecikme %4")
+                    .arg(summaryCard.data_.minutes).arg(Math.round(summaryCard.data_.fps))
+                    .arg("%" + (summaryCard.data_.loss * 100).toFixed(1))
+                    .arg(summaryCard.data_.rtt > 0 ? Math.round(summaryCard.data_.rtt) + " ms" : "—") : ""
+                font.family: Tema.body
+                font.pixelSize: 13
+                color: Tema.muted
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: summaryCard.data_ ? summaryCard.data_.verdict : ""
+                font.family: Tema.body
+                font.pixelSize: 14
+                color: Tema.text
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                visible: !!summaryCard.data_ && summaryCard.data_.advice.length > 0
+                wrapMode: Text.WordWrap
+                text: summaryCard.data_ ? summaryCard.data_.advice : ""
+                font.family: Tema.body
+                font.pixelSize: 13
+                color: Tema.faint
+            }
+        }
+    }
     // Old networkIndicator: while the packet loss is above Ses ve ağ → Zayıf bağlantı uyarısı (3%)
     Rectangle {
         id: weakLink
@@ -1304,6 +1521,120 @@ Window {
                 mouseAimHintTimer.restart()
                 oviora.logUi("ui-mouse-aim", mouseAimHint.captured ? "hint: captured" : "hint: released")
             }
+        }
+    }
+    // Sharing 2.0, the owner's side: a friend asks to connect (Bağlanmadan önce bana sor) or for more time. The
+    // oldest ask is shown with its answers, on every page and over the stream (cut out of the video window).
+    Rectangle {
+        id: askCard
+        objectName: "ask-card"
+        // --dialog askcard (test runs) shows two sample asks; nothing is sent
+        readonly property bool testAsks: typeof vyTest !== "undefined" && vyTest.dialog === "askcard"
+        readonly property var asks: testAsks ? [{ kind: "extend", guest: "deniz", console: "Salon PS5" }, { kind: "lease", guest: "ece", console: "Salon PS5" }]
+            : typeof platform !== "undefined" && platform ? platform.pendingAsks : []
+        readonly property var ask: asks.length ? asks[0] : null
+        readonly property bool videoCover: visible
+        property real coverRadius: radius
+        z: 480
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: 24
+        anchors.bottomMargin: 24
+        width: Math.min(380, parent.width - 48)
+        height: askColumn.implicitHeight + 32
+        radius: Tema.radiusPanel
+        color: Tema.surface
+        border.width: 1
+        border.color: Tema.accent
+        opacity: ask ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        ColumnLayout {
+            id: askColumn
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 10
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: !askCard.ask ? "" : askCard.ask.kind === "lease" ? qsTr("Bağlanma isteği") : qsTr("Ek süre isteği")
+                font.family: Tema.body
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                color: Tema.text
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: !askCard.ask ? "" : askCard.ask.kind === "lease"
+                    ? qsTr("%1, %2 adlı PS5'ine bağlanmak istiyor.").arg(askCard.ask.guest).arg(askCard.ask.console)
+                    : qsTr("%1, %2 adlı PS5'inde oynamak için ek süre istiyor.").arg(askCard.ask.guest).arg(askCard.ask.console)
+                font.family: Tema.body
+                font.pixelSize: 14
+                color: Tema.muted
+            }
+            Text {
+                textFormat: Text.PlainText
+                visible: askCard.asks.length > 1
+                text: qsTr("Bekleyen %1 istek daha var").arg(askCard.asks.length - 1)
+                font.family: Tema.body
+                font.pixelSize: 12
+                color: Tema.faint
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: 8
+                VButton {
+                    text: qsTr("Reddet")
+                    onClicked: platform.answerAsk(0, false, 30)
+                }
+                VButton {
+                    visible: !!askCard.ask && askCard.ask.kind === "extend"
+                    text: qsTr("+1 saat")
+                    onClicked: platform.answerAsk(0, true, 60)
+                }
+                VButton {
+                    primary: true
+                    text: !!askCard.ask && askCard.ask.kind === "extend" ? qsTr("+30 dk") : qsTr("İzin ver")
+                    onClicked: platform.answerAsk(0, true, 30)
+                }
+            }
+        }
+    }
+    // Sharing 2.0, the guest's side: another game than the owner allows is open; back to it before the countdown ends
+    Rectangle {
+        id: gameWarning
+        objectName: "game-warning"
+        readonly property var w: typeof platform !== "undefined" && platform ? platform.sessionGameWarning : ({})
+        readonly property bool videoCover: visible
+        property real coverRadius: radius
+        z: 485
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: 24
+        width: Math.min(560, parent.width - 48)
+        height: gameWarningText.implicitHeight + 28
+        radius: Tema.radiusPanel
+        color: Tema.danger
+        opacity: root.page === "min" && w && w.current ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        Text {
+            id: gameWarningText
+            anchors.fill: parent
+            anchors.margins: 14
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+            text: gameWarning.w && gameWarning.w.current
+                ? qsTr("%1 bu paylaşımda izinli değil. %2 oyununa dön — %3 saniye içinde bağlantı kapanacak.")
+                    .arg(gameWarning.w.current).arg((gameWarning.w.allowed || []).join(", ")).arg(gameWarning.w.seconds_left)
+                : ""
+            font.family: Tema.body
+            font.pixelSize: 15
+            font.weight: Font.DemiBold
+            color: "white"
         }
     }
     // A friend's message while the stream's picture is shown (MessageCenter.incoming, only for a

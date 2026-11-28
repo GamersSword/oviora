@@ -9,12 +9,14 @@
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_audio.h>
 #include <cstring>
+#include <format>
 #include "oviora/Log.h"
 namespace oviora::remoteplay {
 bool ControllerInput::warmUp(){
     if(initialized_)return true;
     // No SDL window is created. Our explicit foreground gate is authoritative.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT,legacyPads_?"1":"0");
     initialized_=SDL_InitSubSystem(SDL_INIT_GAMEPAD);return initialized_;
 }
 bool ControllerInput::start(uint32_t preferredDevice){
@@ -45,6 +47,7 @@ void ControllerInput::activate(SDL_Gamepad* pad){
     gamepad_=pad;
     touchQueue_.clear();touchState_={};sensorStamp_=0;haveGyro_=haveAccel_=false;gyroBias_={};calibrating_=false;touchIds_={-1,-1};gyro_=SDL_GamepadHasSensor(gamepad_,SDL_SENSOR_GYRO)&&SDL_SetGamepadSensorEnabled(gamepad_,SDL_SENSOR_GYRO,true);
     accel_=SDL_GamepadHasSensor(gamepad_,SDL_SENSOR_ACCEL)&&SDL_SetGamepadSensorEnabled(gamepad_,SDL_SENSOR_ACCEL,true);
+    applyLights();
     std::string line=std::string("device opened gyro=")+(gyro_?"1":"0")+" accel="+(accel_?"1":"0")+" touchpads="+std::to_string(SDL_GetNumGamepadTouchpads(gamepad_));
     if(follow_){const char* name=SDL_GetGamepadName(gamepad_);line+=std::string(" active (follow last pressed, ")+std::to_string(others_.size()+1)+" open) name="+(name?name:"?");}
     oviora::log::info("remoteplay-input",line);
@@ -148,6 +151,19 @@ ControllerState ControllerInput::poll(bool focused){
         state.touches=touchState_;
     }
     if(gyro_&&accel_&&haveGyro_&&haveAccel_){state.motionValid=true;state.motionTimestampUs=sensorStamp_;state.accel=sensorAccel_;for(int i=0;i<3;++i)state.gyro[i]=sensorGyro_[i]-gyroBias_[i];}
+    // Gyro aim: turn speed (rad/s) to right stick deflection, over what the stick itself says. Yaw (the pad
+    // turning left/right, gyro y) and pitch (gyro x) move the view; a small dead band drops sensor noise and a
+    // lift over the games' own stick dead zone makes slow turns move at all
+    if(gyroAimMode_>0&&state.motionValid&&(gyroAimMode_==2||state.l2>40)){
+        auto toStick=[&](float rate,int16_t stick){
+            if(std::abs(rate)<.02f)return stick;
+            const float v=std::clamp(rate*gyroAimSens_*.55f,-1.f,1.f);
+            const float lifted=(v>0?1.f:-1.f)*(.14f+.86f*std::abs(v));
+            return int16_t(std::clamp(int(stick)+int(lifted*32767.f),-32768,32767));
+        };
+        state.rightX=toStick(-state.gyro[1],state.rightX);
+        state.rightY=toStick(-state.gyro[0],state.rightY);
+    }
     return state;
 }
 void ControllerInput::releaseEffects(){
@@ -162,7 +178,19 @@ void ControllerInput::releaseEffects(){
     if(hapticStream_)SDL_ClearAudioStream(hapticStream_);
     effectsActive_=false;
 }
+void ControllerInput::applyLights(){
+    if(!gamepad_)return;
+    if(haveLed_)SDL_SetGamepadLED(gamepad_,ledColor_[0],ledColor_[1],ledColor_[2]);
+    // The console counts players from 1; SDL from 0 (its DualSense driver lights the player LEDs from it)
+    if(playerIndex_>0)SDL_SetGamepadPlayerIndex(gamepad_,playerIndex_-1);
+}
 void ControllerInput::feedback(ControllerFeedback f,bool focused){
+    if(f.led||f.player){
+        if(f.led){haveLed_=true;ledColor_=f.ledColor;}
+        if(f.player)playerIndex_=f.playerIndex;
+        applyLights();
+        oviora::log::info("remoteplay-feedback",std::format("lights led={},{},{} player={}",ledColor_[0],ledColor_[1],ledColor_[2],playerIndex_));
+    }
     if(!focused||!gamepad_){releaseEffects();return;}
     if(f.rumble){
         // Scaled as the old app did (very weak /5 … very strong x5); a weak motor still turns.
@@ -212,8 +240,12 @@ bool ControllerInput::calibrate(){
 ControllerInput::Capabilities ControllerInput::capabilities()const{
     if(!gamepad_)return {};
     const char* name=SDL_GetGamepadName(gamepad_);
-    return {true,gyro_,accel_,SDL_GetNumGamepadTouchpads(gamepad_)>0,
+    int percent=-1;const SDL_PowerState power=SDL_GetGamepadPowerInfo(gamepad_,&percent);
+    Capabilities c{true,gyro_,accel_,SDL_GetNumGamepadTouchpads(gamepad_)>0,
         SDL_GetGamepadType(gamepad_)==SDL_GAMEPAD_TYPE_PS5,hapticStream_!=nullptr,calibrating_,name?name:""};
+    c.battery=(power==SDL_POWERSTATE_ON_BATTERY||power==SDL_POWERSTATE_CHARGING||power==SDL_POWERSTATE_CHARGED)?percent:-1;
+    c.charging=power==SDL_POWERSTATE_CHARGING;
+    return c;
 }
 
 }

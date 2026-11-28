@@ -104,6 +104,39 @@ SettingsPage {
 
     // Old showStreamStats and wifiDroppedNotif (Main.qml draws both over the picture); the advanced
     // rows (packetLossReportedMax, iDROnFECFailureEnabled) stay hidden: the engine keeps 5% and on
+    // Connection test: Wi-Fi band and signal (or cable), delay and jitter to the Oviora server, plain advice
+    SettingsCard {
+        title: qsTr("Bağlantı testi")
+        description: qsTr("Wi-Fi'nin bandını ve gücünü, internetin gecikmesini ve dalgalanmasını ölçer; neyin akışı bozabileceğini söyler.")
+        readonly property var t: typeof platform !== "undefined" && platform ? platform.networkTest : ({})
+        // --dialog nettest (test runs): the test starts by itself
+        Timer {
+            interval: 3000
+            running: typeof vyTest !== "undefined" && vyTest.dialog === "nettest"
+            onTriggered: platform.runNetworkTest()
+        }
+
+        SettingRow {
+            title: parent.t && parent.t.state === "done" ? parent.t.verdict : qsTr("Testi başlat")
+            help: {
+                const t = parent.t || {}
+                if (t.state === "running") return qsTr("Ölçülüyor…")
+                if (t.state !== "done") return qsTr("Birkaç saniye sürer; oyun açıkken değil, şimdi dene.")
+                const parts = []
+                if (t.connection === "wifi") parts.push(qsTr("Wi-Fi") + (t.band ? " " + t.band : "") + (t.signal !== undefined ? qsTr(", sinyal %%1").arg(t.signal) : ""))
+                else if (t.connection === "cable") parts.push(qsTr("Kablo"))
+                parts.push(qsTr("gecikme %1 ms, dalgalanma ±%2 ms").arg(t.rttMs).arg(t.jitterMs))
+                return parts.join(" · ") + ((t.advice || []).length ? "\n• " + t.advice.join("\n• ") : "")
+            }
+            PillButton {
+                compact: true
+                enabled: !(parent.parent.t && parent.parent.t.state === "running")
+                text: parent.parent.t && parent.parent.t.state === "done" ? qsTr("Tekrar dene") : qsTr("Başlat")
+                onClicked: platform.runNetworkTest()
+            }
+        }
+    }
+
     SettingsCard {
         title: qsTr("Bağlantı")
         description: qsTr("Bağlantının durumunu görmek ve zayıfladığında haber almak için.")

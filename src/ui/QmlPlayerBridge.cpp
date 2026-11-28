@@ -394,6 +394,7 @@ QmlPlayerBridge::QmlPlayerBridge(engine::EngineController& engine, std::filesyst
     // thread that froze the connecting screen when it ran at Bağlan
     QTimer::singleShot(0, this, [this] {
         const auto t0 = std::chrono::steady_clock::now();
+        impl_->controller.setLegacyPads(impl_->prefBool("legacyPads", false));
         const bool ok = impl_->controller.warmUp();
         oviora::log::info("controller", std::format("gamepad subsystem ready={} in {} ms (at start, not at Bağlan)", ok,
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()));

@@ -26,7 +26,7 @@
 | Feature | What it does |
 | --- | --- |
 | Reach your PS5 from anywhere | Discovers your console automatically on your home network and connects via PSN when away. Wakes a resting PS5 remotely and connects as soon as it boots. |
-| Share your PS5 with friends | You choose who can connect. Each session is limited to 1 hour and can be ended anytime with "Kick"; your PSN password is never shared. |
+| Share your PS5 with friends | You choose who can connect, and optionally set a time limit, approve each connection or allow only the games you pick. "Kick" ends a session anytime; your PSN password is never shared. |
 | Live Turkish subtitles | Reads on-screen English subtitles via on-device OCR and writes Turkish right below them, keeping proper names intact and game terms consistent. |
 | Smoothness and picture enhancement | On NVIDIA RTX GPUs, cleans up compression artifacts, sharpens the picture, and applies super resolution. On RTX 40/50 GPUs, frame generation makes 30 fps games flow at 60/90/120 fps. |
 | DualSense, keyboard, and mouse | Supports DualSense haptics, adaptive triggers, and gyro. Play with keyboard and mouse (F8 mouse aim) if needed, and type into PS5 text boxes with your PC keyboard. |
@@ -69,7 +69,7 @@ Sharing your PS5 stays under the console owner's control at every step.
 
 - **Adding friends:** Add friends by username or share an invite link and QR code. You can choose whether people joining via your invite need your approval first or become friends immediately.
 - **Owner decides who connects:** Toggle which friends are allowed to access each of your PS5 consoles.
-- **1-hour session limit and Kick:** A friend's session is capped at 1 hour, and you can end it anytime by clicking "Kick".
+- **Your rules per friend:** Set a time limit per session (30 minutes to 3 hours, or none), get asked before each connection, or allow only the games you pick. Friends see the time left and can ask you for more; you can end any session with "Kick".
 - **Queue and live game status:** If your PS5 is busy, friends can join a queue, see their position, and get notified when the console is free. Your friends list also shows which game is currently open on the console.
 - **Your PSN password never goes to friends:** PSN sign-in happens directly on Sony's page. Your password or key is never sent to your friend; when a friend connects, the Oviora server relays the Sony authorization on your behalf for that session only.
 - **End-to-end encrypted chat:** Message friends inside the app. Only you and your friend can read the messages; the Oviora server cannot read them.
@@ -87,7 +87,7 @@ sequenceDiagram
 
     O_Owner->>PSN: "Signs in directly on Sony's page"
     PSN-->>Srv: "Encrypted session credentials (password never stored)"
-    O_Owner->>Srv: "Allow friend to connect (max 1 hour)"
+    O_Owner->>Srv: "Allow friend to connect (optional time limit, approval, games)"
     F->>Srv: "Requests connection to PS5"
     Srv->>PSN: "Relays temporary session authorization"
     PSN-->>Srv: "Single-session permission"

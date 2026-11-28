@@ -586,7 +586,7 @@ if(OVIORA_BUILD_QML_UI AND Qt6_FOUND)
   endif()
   target_include_directories(oviora_platform PUBLIC include PRIVATE third_party/qrcodegen third_party/webview2/include)
   target_link_libraries(oviora_platform PUBLIC Qt6::Core Qt6::Gui Qt6::Quick Qt6::Widgets Qt6::Network Qt6::Concurrent
-    PRIVATE OpenSSL::Crypto crypt32 ole32 shell32 advapi32 uuid)
+    PRIVATE OpenSSL::Crypto crypt32 ole32 shell32 advapi32 uuid wlanapi)
   # Messages: end-to-end encryption from the vendored chiaki library (chiaki/e2e.h)
   if(NOT TARGET chiaki-lib)
     message(FATAL_ERROR "oviora_platform needs chiaki-lib (OVIORA_ENABLE_REMOTEPLAY) for the message encryption")

@@ -1,6 +1,7 @@
 // QML bridge: Preferences responsibilities.
 #include "../QmlPlayerBridge_p.h"
 #include "oviora/ngx/AnrProvider.h"
+#include <QRegularExpression>
 
 namespace oviora::ui {
 // --- shell preferences -------------------------------------------------------
@@ -167,14 +168,15 @@ bool QmlPlayerBridge::setPreference(const QString& key, const QVariant& value) {
         {"subtitleSize", {16, 56}}, {"subtitleFont", {0, 5}}, {"subtitleOutline", {0, 3}},
         {"subtitleMargin", {0, 240}}, {"subtitleLines", {0, 8}}};
     // Game input (bridge/GameInput.cpp): Genel → Yayın menüsü, Kumandalar, Tuşlar.
-    static const QHash<QString, std::pair<int, int>> inputRanges{{"rumbleStrength", {0, 5}}, {"hapticStrength", {0, 200}}};
-    static const QStringList inputFlags{"padMenuCombo", "keyboardMouse", "keyboardPlay", "mouseTouch", "padBackground"};
+    static const QHash<QString, std::pair<int, int>> inputRanges{{"rumbleStrength", {0, 5}}, {"hapticStrength", {0, 200}}, {"gyroAimSens", {2, 40}}};
+    static const QStringList inputFlags{"padMenuCombo", "keyboardMouse", "keyboardPlay", "mouseTouch", "padBackground", "legacyPads"};
     // The PS5 stream (bridge/StreamSession.cpp, Main.qml): Genel -> Oyunu birakinca, Gorunti ->
     // Pencere, Ses ve ag -> Mikrofon and Baglanti, Konsollar -> Otomatik baglan.
     static const QHash<QString, QStringList> streamChoices{{"disconnectAction", {"ask", "sleep", "nothing"}},
                                                           {"suspendAction", {"sleep", "nothing"}},
                                                           {"streamWindow", {"normal", "maximized", "fullscreen"}},
-                                                          {"streamMenuSide", {"right", "left"}}};
+                                                          {"streamMenuSide", {"right", "left"}},
+                                                          {"gyroAim", {"off", "l2", "always"}}};
     static const QHash<QString, std::pair<int, int>> streamRanges{{"weakLinkWarning", {0, 100}}, {"hideCursorSeconds", {1, 10}}};
     static const QStringList streamFlags{"showStreamStats", "micStartOn", "fullscreenDoubleClick", "hideCursor", "fgHintShown"};
     static const QStringList flags{"subtitleEnabled", "subtitleBackground", "subtitleFit",
@@ -241,10 +243,40 @@ bool QmlPlayerBridge::setPreference(const QString& key, const QVariant& value) {
             if (!ok) return false;
             if (k == QLatin1String("sensitivity")) { if (n < 1 || n > 100) return false; }
             else if (k == QLatin1String("accel")) { if (n < 0 || n > 100) return false; }
-            else if (k == QLatin1String("left") || k == QLatin1String("right") || k == QLatin1String("middle")) { if (n < 0 || n > 10) return false; }
+            else if (k == QLatin1String("left") || k == QLatin1String("right") || k == QLatin1String("middle") || k == QLatin1String("x1")
+                     || k == QLatin1String("x2") || k == QLatin1String("wheel_up") || k == QLatin1String("wheel_down")) { if (n < 0 || n > 16) return false; }
+            else if (k == QLatin1String("ads")) { if (n < 20 || n > 100) return false; }
+            else if (k == QLatin1String("deadzone")) { if (n < 0 || n > 35) return false; }
             else if (k == QLatin1String("toggle_key")) { if (!toggleKeys.contains(n)) return false; }
             else return false;
             out[k] = n;
+        }
+        stored = out;
+    } else if (key == QLatin1String("gameProfiles")) {
+        // Ctrl+O > Bu oyun için kaydet: per PS5 title id (ABCD12345) the game's name, its subtitle area
+        // (fractions), the picture preset's name and the mouse aim settings; at most 50 games, known fields only.
+        const auto map = value.toMap();
+        if (map.size() > 50) return false;
+        static const QRegularExpression titleId(QStringLiteral("^[A-Z]{4}[0-9]{5}$"));
+        QVariantMap out;
+        for (auto it = map.begin(); it != map.end(); ++it) {
+            if (!titleId.match(it.key()).hasMatch()) return false;
+            const auto p = it.value().toMap();
+            QVariantMap g;
+            g["name"] = p.value("name").toString().left(128);
+            if (p.contains("subtitle")) {
+                const auto r = p.value("subtitle").toMap();
+                QVariantMap area;
+                for (const char* k : {"regionX", "regionY", "regionW", "regionH"}) {
+                    bool ok = false; const double v = r.value(k).toDouble(&ok);
+                    if (!ok || v < 0 || v > 1) return false;
+                    area[k] = v;
+                }
+                g["subtitle"] = area;
+            }
+            if (p.contains("preset")) g["preset"] = p.value("preset").toString().left(128);
+            if (p.contains("mouseAim")) g["mouseAim"] = p.value("mouseAim").toMap();
+            out[it.key()] = g;
         }
         stored = out;
     } else if (key == QLatin1String("keyMap")) {
@@ -339,7 +371,7 @@ bool QmlPlayerBridge::setPreference(const QString& key, const QVariant& value) {
     return true;
 }
 void QmlPlayerBridge::applyPreference(const QString& key) {
-    static const QStringList gameInputKeys{"padMenuCombo", "padMenuButtons", "padButtonMap", "rumbleStrength", "hapticStrength",
+    static const QStringList gameInputKeys{"padMenuCombo", "padMenuButtons", "padButtonMap", "rumbleStrength", "hapticStrength", "gyroAim", "gyroAimSens",
                                            "keyboardMouse", "keyboardPlay", "keyMap", "mouseAim", "mouseTouch"};
     if (gameInputKeys.contains(key)) loadGameInput();
     if (key == QLatin1String("autoConnect")) emit lanChanged();

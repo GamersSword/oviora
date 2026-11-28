@@ -177,6 +177,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 	takion_info.enable_crypt = true;
 	takion_info.enable_dualsense = session->connect_info.enable_dualsense;
 	takion_info.protocol_version = chiaki_target_is_ps5(session->target) ? 12 : 9;
+	// Oviora: a given socket is a PSN (internet) stream: late packets there are often not lost, wait ~2 frames
+	takion_info.av_reorder_timeout_us = socket ? 32000 : 0;
 
 	takion_info.cb = stream_connection_takion_cb;
 	takion_info.cb_user = stream_connection;

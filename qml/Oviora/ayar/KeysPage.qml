@@ -531,9 +531,22 @@ SettingsPage {
 
     // ── Mouse aim: the mouse turns the right stick ──
     // Old mouse_aim/* (bridge/MouseAim.cpp); the stored map over the old defaults
-    readonly property var mouseAimDefaults: ({ enabled: false, sensitivity: 50, accel: 30, invert_y: false, left: 1, right: 2, middle: 5, toggle_key: Qt.Key_F8 })
+    readonly property var mouseAimDefaults: ({ enabled: false, sensitivity: 50, accel: 30, invert_y: false, left: 1, right: 2, middle: 5,
+                                               x1: 0, x2: 0, wheel_up: 0, wheel_down: 0, ads: 100, deadzone: 18, toggle_key: Qt.Key_F8 })
     readonly property var mouseAim: Object.assign({}, mouseAimDefaults, oviora.preferences.mouseAim || {})
-    readonly property var mouseAimActions: [qsTr("Hiçbiri"), "R2", "L2", "R1", "L1", "R3", "L3", qsTr("Kare"), qsTr("Çarpı"), qsTr("Daire"), qsTr("Üçgen")]
+    readonly property var mouseAimActions: [qsTr("Hiçbiri"), "R2", "L2", "R1", "L1", "R3", "L3", qsTr("Kare"), qsTr("Çarpı"), qsTr("Daire"), qsTr("Üçgen"),
+                                            qsTr("Yukarı"), qsTr("Aşağı"), qsTr("Sol"), qsTr("Sağ"), qsTr("Dokunmatik yüzey"), "Options"]
+    // Ready-made layouts (the buttons only; sensitivity and the rest stay): R2 1, L2 2, R1 3, L1 4, R3 5, L3 6, Kare 7,
+    // Çarpı 8, Daire 9, Üçgen 10, Yukarı 11, Aşağı 12, Sol 13, Sağ 14
+    readonly property var mouseAimLayouts: [
+        [qsTr("Nişancı"), { left: 1, right: 2, middle: 5, x1: 4, x2: 3, wheel_up: 10, wheel_down: 10, ads: 70, deadzone: 18 }],
+        [qsTr("Aksiyon / TPS"), { left: 1, right: 2, middle: 5, x1: 7, x2: 9, wheel_up: 11, wheel_down: 12, ads: 80, deadzone: 16 }],
+        [qsTr("Yarış"), { left: 1, right: 2, middle: 0, x1: 4, x2: 3, wheel_up: 0, wheel_down: 0, ads: 100, deadzone: 12 }]
+    ]
+    function applyLayout(values) {
+        const next = Object.assign({}, page.mouseAim, values)
+        oviora.setPreference("mouseAim", next)
+    }
     readonly property var mouseAimToggleKeys: [Qt.Key_F6, Qt.Key_F7, Qt.Key_F8, Qt.Key_F9, Qt.Key_F10, Qt.Key_ScrollLock, Qt.Key_Pause]
     readonly property var mouseAimToggleNames: ["F6", "F7", "F8", "F9", "F10", "Scroll Lock", "Pause"]
     function setAim(key, value) {
@@ -571,6 +584,36 @@ SettingsPage {
             }
         }
         SettingRow {
+            title: qsTr("Nişan alırken hassasiyet")
+            help: qsTr("L2 basılıyken (nişan alırken) hassasiyet bu orana iner; uzak hedeflere ince ayar için.")
+            enabled: !!page.mouseAim.enabled
+            ValueSlider {
+                implicitWidth: 320
+                valueWidth: 52
+                from: 20
+                to: 100
+                stepSize: 5
+                value: page.mouseAim.ads
+                valueText: "%" + Math.round(value)
+                onMoved: page.setAim("ads", Math.round(value))
+            }
+        }
+        SettingRow {
+            title: qsTr("Ölü bölge telafisi")
+            help: qsTr("Oyunlar çubuğun ortasındaki küçük hareketleri yok sayar. Fare yavaşken kamera hiç dönmüyorsa artır, çok seğiriyorsa azalt.")
+            enabled: !!page.mouseAim.enabled
+            ValueSlider {
+                implicitWidth: 320
+                valueWidth: 52
+                from: 0
+                to: 35
+                stepSize: 1
+                value: page.mouseAim.deadzone
+                valueText: "%" + Math.round(value)
+                onMoved: page.setAim("deadzone", Math.round(value))
+            }
+        }
+        SettingRow {
             title: qsTr("Hızlanma")
             help: qsTr("Artırınca yavaş hareketler daha ince, hızlı savuruşlar daha güçlü olur. 0'da hız ile dönüş doğru orantılı.")
             enabled: !!page.mouseAim.enabled
@@ -595,13 +638,30 @@ SettingsPage {
         }
         SettingRow {
             title: qsTr("Fare tuşları")
-            help: qsTr("Sol tık, sağ tık ve tekerleğe basma hangi kumanda tuşu olsun.")
+            help: qsTr("Farenin tuşları, yan tuşları ve tekerleği hangi kumanda tuşu olsun. Hazır düzenlerden biriyle başlayabilirsin.")
             enabled: !!page.mouseAim.enabled
             stacked: true
+            ColumnLayout {
+            spacing: 12
             RowLayout {
-                spacing: 12
+                spacing: 8
                 Repeater {
-                    model: [["left", qsTr("Sol tık")], ["right", qsTr("Sağ tık")], ["middle", qsTr("Orta tık")]]
+                    model: page.mouseAimLayouts
+                    delegate: PillButton {
+                        compact: true
+                        required property var modelData
+                        text: modelData[0]
+                        onClicked: page.applyLayout(modelData[1])
+                    }
+                }
+            }
+            GridLayout {
+                columns: 4
+                columnSpacing: 12
+                rowSpacing: 8
+                Repeater {
+                    model: [["left", qsTr("Sol tık")], ["right", qsTr("Sağ tık")], ["middle", qsTr("Orta tık")], ["x1", qsTr("Yan tuş (geri)")],
+                            ["x2", qsTr("Yan tuş (ileri)")], ["wheel_up", qsTr("Tekerlek yukarı")], ["wheel_down", qsTr("Tekerlek aşağı")]]
                     delegate: ColumnLayout {
                         required property var modelData
                         spacing: 4
@@ -620,6 +680,7 @@ SettingsPage {
                         }
                     }
                 }
+            }
             }
         }
         SettingRow {
