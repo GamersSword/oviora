@@ -243,7 +243,15 @@ QString OvioraServer::installedVersion() const
 		return dev_server_version;
 #endif
 	APP_SETTINGS(s);
-	return s.value(QString(GROUP) + "/installed_version").toString();
+	const QString saved = s.value(QString(GROUP) + "/installed_version").toString();
+	// The package's own surum.txt (every update brings it) is the floor: an older version written to the settings
+	// (a fallback to the server's older release while GitHub refused) never makes the app claim to be older
+	QFile f(QCoreApplication::applicationDirPath() + "/surum.txt");
+	const QString file = f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()).trimmed() : QString();
+	static const QRegularExpression shape(QStringLiteral("^[0-9]{4}[.][0-9]{2}[.][0-9]{2}-[0-9]{4}$"));
+	if(shape.match(file).hasMatch() && QString::compare(file, saved) > 0)
+		return file;
+	return saved;
 }
 
 bool OvioraServer::readConnectionCode(const QString &code)
@@ -822,6 +830,10 @@ void OvioraServer::takeAccount(const QJsonObject &r)
 
 void OvioraServer::requireUpdate()
 {
+	// The server asked for an update, but GitHub's newest release is already this one (the site has not seen it
+	// yet, or cannot reach GitHub): no update screen and no new check for 10 minutes (it looped every second)
+	if(server_behind_at && QDateTime::currentMSecsSinceEpoch() - server_behind_at < 10 * 60 * 1000)
+		return;
 	if(!update_required)
 	{
 		update_required = true;
@@ -2125,6 +2137,23 @@ void OvioraServer::takeManifest(const QByteArray &manifest, const QString &versi
 		return;
 	}
 #endif
+	// Never back: the offered release is older than this one (GitHub refused and the server offers its own older
+	// release). Nothing to install, and the installed version is not overwritten
+	if(const QString installed = installedVersion(); !installed.isEmpty() && QString::compare(version, installed) < 0)
+	{
+		qCWarning(yakamozServer) << "Offered release" << version << "is older than" << installed << "- staying";
+		update_version = installed;
+		update_state = "none";
+		update_text = tr("Oviora güncel (sürüm %1).").arg(installed);
+		if(update_required)
+		{
+			update_required = false;
+			server_behind_at = QDateTime::currentMSecsSinceEpoch();
+			refresh();
+		}
+		emit updateChanged();
+		return;
+	}
 	gh_pack_url = packUrl;
 	QList<UpdateFile> files;
 	for(const QJsonValue &v : QJsonDocument::fromJson(manifest).object().value("files").toArray())
@@ -2174,9 +2203,16 @@ void OvioraServer::takeManifest(const QByteArray &manifest, const QString &versi
 			update_state = "none";
 			update_text = tr("Oviora güncel (sürüm %1).").arg(update_version);
 			emit updateChanged();
-			// The files already were the current ones: the server knows it from the next request
+			// The files already were the current ones: the server knows it from the next request. If it still asks
+			// for an update, it is behind GitHub (requireUpdate leaves it for a while)
 			if(update_required)
+			{
+				update_required = false;
+				server_behind_at = QDateTime::currentMSecsSinceEpoch();
+				qCWarning(yakamozServer) << "The server asks for an update but this is GitHub's newest release" << update_version;
+				emit updateChanged();
 				refresh();
+			}
 			return;
 		}
 		update_state = "downloading";

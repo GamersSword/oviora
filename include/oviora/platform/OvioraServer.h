@@ -412,6 +412,7 @@ private:
 	QVariantList pending_asks, owner_titles;
 	qint64 waiting_since = 0;
 	int account_ticks = 0;
+	qint64 server_behind_at = 0;	// requireUpdate: the server was behind GitHub then
 	QVariantMap network_test;
 	QList<double> network_rtts;
 	int network_lost = 0;
