@@ -1627,10 +1627,12 @@ Window {
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
-            text: gameWarning.w && gameWarning.w.current
-                ? qsTr("%1 bu paylaşımda izinli değil. %2 oyununa dön — %3 saniye içinde bağlantı kapanacak.")
+            // checking: the time ran out, the server waits for a fresh game reading (going back takes a while to show)
+            text: !gameWarning.w || !gameWarning.w.current ? ""
+                : gameWarning.w.checking
+                ? qsTr("Oyun kontrol ediliyor… %1 oyunundaysan bağlantı açık kalır.").arg((gameWarning.w.allowed || []).join(", "))
+                : qsTr("%1 bu paylaşımda izinli değil. %2 oyununa dön — %3 saniye içinde bağlantı kapanacak. Dönüşün görülmesi biraz sürebilir.")
                     .arg(gameWarning.w.current).arg((gameWarning.w.allowed || []).join(", ")).arg(gameWarning.w.seconds_left)
-                : ""
             font.family: Tema.body
             font.pixelSize: 15
             font.weight: Font.DemiBold

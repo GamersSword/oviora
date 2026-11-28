@@ -3120,8 +3120,10 @@ Pane {
         running: typeof vyTest !== "undefined" && vyTest.dialog === "sharerules"
         onTriggered: {
             const f = home.server.friends || [];
-            if (f.length > 0 && home.server.consoles.length > 0)
-                home.openShareRules(home.server.consoles[0], f[0].name,
+            // Without an own PS5 a made-up one (its "test-" row is never sent)
+            const con = home.server.consoles.length > 0 ? home.server.consoles[0] : { duid: "test-ps5", name: "PS5 Main" };
+            if (f.length > 0)
+                home.openShareRules(con, f[0].name,
                     { limit_min: 60, ask_first: true, titles: [{ id: "PPSA01342", name: "Marvel's Spider-Man 2" }, { id: "PPSA03420", name: "GTA V" }] });
         }
     }
@@ -3174,14 +3176,17 @@ Pane {
                     property bool askFirst: false
                     property bool onlySome: false
                     property var picked: ({})   // title id -> name
-                    // The games to pick: those seen on my PS5s, plus the ones picked before (they may be older)
+                    // The games picked when the window opened: shown even when they are not among the games seen lately
+                    property var pickedAtStart: ({})
+                    // The games to pick: those seen on my PS5s, plus the ones picked before. It does not follow the
+                    // checks (a new list on every click remade the rows under the pointer and the click was lost)
                     readonly property var games: {
                         const out = [], seen = {};
                         for (const t of home.server.ownerTitles || []) {
                             if (!seen[t.id]) { seen[t.id] = true; out.push(t); }
                         }
-                        for (const id in picked) {
-                            if (!seen[id]) { seen[id] = true; out.push({ id: id, name: picked[id] }); }
+                        for (const id in pickedAtStart) {
+                            if (!seen[id]) { seen[id] = true; out.push({ id: id, name: pickedAtStart[id] }); }
                         }
                         return out;
                     }
@@ -3195,6 +3200,7 @@ Pane {
                         for (const t of (rule && rule.titles) || [])
                             p[t.id] = t.name;
                         picked = p;
+                        pickedAtStart = Object.assign({}, p);
                         onlySome = Object.keys(p).length > 0;
                         home.server.loadOwnerTitles();
                         open();
@@ -3220,7 +3226,22 @@ Pane {
                         color: Tema.surface
                         border.color: Tema.lineStrong
                     }
+                    // The rules scroll as a whole when the window is low; the buttons stay under them
                     contentItem: ColumnLayout {
+                        spacing: 12
+                      Flickable {
+                        id: rulesFlick
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.preferredHeight: rulesBody.implicitHeight
+                        contentWidth: width
+                        contentHeight: rulesBody.implicitHeight
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar { policy: rulesFlick.contentHeight > rulesFlick.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
+                      ColumnLayout {
+                        id: rulesBody
+                        width: rulesFlick.width - (rulesFlick.contentHeight > rulesFlick.height ? 14 : 0)
                         spacing: 14
                         Label {
                             textFormat: Text.PlainText
@@ -3286,34 +3307,24 @@ Pane {
                             checked: shareRules.onlySome
                             onToggled: shareRules.onlySome = checked
                             text: qsTr("Yalnız seçtiğim oyunlar")
-                            note: qsTr("Başka bir oyun açılırsa %1 uyarılır; 45 saniye içinde dönmezse oturum kapanır. PS5'in menülerini ve ayarlarını engelleyemez.").arg(shareRules.friend)
+                            note: qsTr("Başka bir oyun açılırsa %1 uyarılır; yaklaşık 1 dakika içinde dönmezse oturum kapanır. PS5'in menülerini ve ayarlarını engelleyemez.").arg(shareRules.friend)
                         }
-                        ScrollView {
-                            visible: shareRules.onlySome
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: Math.min(gameList.implicitHeight, 220)
-                            contentWidth: availableWidth
-                            clip: true
-                            ColumnLayout {
-                                id: gameList
-                                width: parent.width
-                                spacing: 2
-                                EmptyNote {
-                                    visible: shareRules.games.length === 0
-                                    Layout.topMargin: 0
-                                    text: qsTr("Henüz oyun görülmedi. PS5'inde bir oyun açıkken (ev ağında Oviora açıksa ya da PSN oyun bilgisi bağlıysa) burada listelenir.")
-                                }
-                                Repeater {
-                                    model: shareRules.games
-                                    delegate: RuleCheck {
-                                        required property var modelData
-                                        Layout.fillWidth: true
-                                        Layout.leftMargin: 28
-                                        checked: shareRules.picked[modelData.id] !== undefined
-                                        onToggled: shareRules.toggleGame(modelData, checked)
-                                        text: modelData.name
-                                    }
-                                }
+                        EmptyNote {
+                            visible: shareRules.onlySome && shareRules.games.length === 0
+                            Layout.topMargin: 0
+                            text: qsTr("Henüz oyun görülmedi. PS5'inde bir oyun açıkken (ev ağında Oviora açıksa ya da PSN oyun bilgisi bağlıysa) burada listelenir.")
+                        }
+                        // The games, each a whole row (the window scrolls when they are many)
+                        Repeater {
+                            model: shareRules.onlySome ? shareRules.games : []
+                            delegate: RuleCheck {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 28
+                                Layout.topMargin: -6
+                                checked: shareRules.picked[modelData.id] !== undefined
+                                onClicked: shareRules.toggleGame(modelData, checked)
+                                text: modelData.name
                             }
                         }
                         Label {
@@ -3326,6 +3337,8 @@ Pane {
                             font.pixelSize: 12
                             color: Tema.faint
                         }
+                      }
+                      }
                         RowLayout {
                             Layout.alignment: Qt.AlignRight
                             spacing: 8
