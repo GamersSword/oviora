@@ -371,6 +371,7 @@ private:
 	static bool verifySignatureWith(const QString &publicKey, const QByteArray &manifest, const QByteArray &signature);
 	/** The newest release on GitHub; on any failure the server's release (serverCheckUpdate) */
 	void githubCheckUpdate();
+	void githubReadZip(bool fromServer);
 	void serverCheckUpdate();
 	/** A signed release manifest: which files differ, then the download. packUrl empty for the server's */
 	void takeManifest(const QByteArray &manifest, const QString &version, const QString &notes, const QString &packUrl);
@@ -430,6 +431,8 @@ private:
 	QString gh_pack_url;	// the GitHub zip of the update being downloaded, empty when it comes from the server
 	QString gh_zip_url;
 	qint64 gh_zip_size = 0;
+	// GitHub's API refused (403/429: 60 requests an hour per address): until then the server is asked instead
+	qint64 gh_api_blocked_until = 0;
 	QHash<QString, ZipEntry> gh_entries;
 	QFile *download_file = nullptr;
 	// Development build (no OVIORA_PLATFORM_UPDATES): the release the server offers, sent as ours

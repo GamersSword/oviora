@@ -2013,6 +2013,8 @@ void OvioraServer::checkUpdate()
 
 void OvioraServer::githubCheckUpdate()
 {
+	if(QDateTime::currentMSecsSinceEpoch() < gh_api_blocked_until)
+		return serverCheckUpdate();
 	QNetworkRequest req{QUrl(githubReleasesUrl())};
 	req.setRawHeader("User-Agent", "Oviora");
 	req.setRawHeader("Accept", "application/vnd.github+json");
@@ -2035,60 +2037,70 @@ void OvioraServer::githubCheckUpdate()
 		}
 		if(reply->error() != QNetworkReply::NoError || gh_zip_url.isEmpty() || gh_zip_size < 22)
 		{
-			qCWarning(yakamozServer) << "GitHub release not available:" << reply->errorString() << "- asking the server";
+			const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+			if(status == 403 || status == 429)
+				gh_api_blocked_until = QDateTime::currentMSecsSinceEpoch() + 10 * 60 * 1000;
+			qCWarning(yakamozServer) << "GitHub release not available:" << status << reply->errorString() << "- asking the server";
 			return serverCheckUpdate();
 		}
-		// The zip's tail (its end record), then its central directory
-		QNetworkReply *tail = zipRange(qMax<qint64>(0, gh_zip_size - 66000), gh_zip_size - 1);
-		connect(tail, &QNetworkReply::finished, this, [this, tail]() {
-			tail->deleteLater();
-			const auto [dirAt, dirSize] = zipDirectory(tail->readAll());
-			if(tail->error() != QNetworkReply::NoError || dirAt < 0 || dirSize <= 0)
-			{
-				qCWarning(yakamozServer) << "GitHub zip end not read:" << tail->errorString() << "- asking the server";
-				return serverCheckUpdate();
-			}
-			QNetworkReply *dir = zipRange(dirAt, dirAt + dirSize - 1);
-			connect(dir, &QNetworkReply::finished, this, [this, dir]() {
-				dir->deleteLater();
-				gh_entries = zipEntries(dir->readAll());
-				const ZipEntry list = gh_entries.value(QLatin1String(ZIP_LIST)), sig = gh_entries.value(QLatin1String(ZIP_LIST_SIG));
-				if(dir->error() != QNetworkReply::NoError || list.csize <= 0 || sig.csize <= 0)
+		githubReadZip(false);
+	});
+}
+
+// The signed list inside the GitHub zip (gh_zip_url, gh_zip_size), read with Range requests: downloads are not
+// counted against GitHub's API limit. fromServer: the server told the zip's address; failing then is an error
+// (asking the server again would loop)
+void OvioraServer::githubReadZip(bool fromServer)
+{
+	const auto fail = [this, fromServer](const char *what, const QString &error) {
+		qCWarning(yakamozServer) << what << error << (fromServer ? "" : "- asking the server");
+		if(!fromServer)
+			return serverCheckUpdate();
+		update_state = "error";
+		update_text = tr("Güncelleme indirilemedi, biraz sonra yeniden denenecek.");
+		emit updateChanged();
+	};
+	// The zip's tail (its end record), then its central directory
+	QNetworkReply *tail = zipRange(qMax<qint64>(0, gh_zip_size - 66000), gh_zip_size - 1);
+	connect(tail, &QNetworkReply::finished, this, [this, tail, fail]() {
+		tail->deleteLater();
+		const auto [dirAt, dirSize] = zipDirectory(tail->readAll());
+		if(tail->error() != QNetworkReply::NoError || dirAt < 0 || dirSize <= 0)
+			return fail("GitHub zip end not read:", tail->errorString());
+		QNetworkReply *dir = zipRange(dirAt, dirAt + dirSize - 1);
+		connect(dir, &QNetworkReply::finished, this, [this, dir, fail]() {
+			dir->deleteLater();
+			gh_entries = zipEntries(dir->readAll());
+			const ZipEntry list = gh_entries.value(QLatin1String(ZIP_LIST)), sig = gh_entries.value(QLatin1String(ZIP_LIST_SIG));
+			if(dir->error() != QNetworkReply::NoError || list.csize <= 0 || sig.csize <= 0)
+				return fail("GitHub zip without a signed list:", dir->errorString());
+			QNetworkReply *a = zipRange(list.offset, list.offset + 30 + 1024 + list.csize);
+			QNetworkReply *b = zipRange(sig.offset, sig.offset + 30 + 1024 + sig.csize);
+			auto pending = std::make_shared<int>(2);
+			auto done = [this, a, b, list, sig, pending, fail]() {
+				if(--*pending)
+					return;
+				a->deleteLater();
+				b->deleteLater();
+				const QByteArray manifest = zipEntryData(a->readAll(), list);
+				const QByteArray signature = QByteArray::fromBase64(zipEntryData(b->readAll(), sig).trimmed());
+				if(manifest.isEmpty())
+					return fail("GitHub release list not read", QString());
+				if(!verifySignatureWith(QString::fromLatin1(GITHUB_PUBLISHER), manifest, signature))
 				{
-					qCWarning(yakamozServer) << "GitHub zip without a signed list:" << dir->errorString() << "- asking the server";
-					return serverCheckUpdate();
+					// Not signed by the publisher: whoever changed the release, nothing of it is installed
+					update_state = "error";
+					update_text = tr("Güncellemenin imzası doğrulanamadı, kurulmadı.");
+					emit updateChanged();
+					qCWarning(yakamozServer) << "GitHub update signature rejected";
+					return;
 				}
-				QNetworkReply *a = zipRange(list.offset, list.offset + 30 + 1024 + list.csize);
-				QNetworkReply *b = zipRange(sig.offset, sig.offset + 30 + 1024 + sig.csize);
-				auto pending = std::make_shared<int>(2);
-				auto done = [this, a, b, list, sig, pending]() {
-					if(--*pending)
-						return;
-					a->deleteLater();
-					b->deleteLater();
-					const QByteArray manifest = zipEntryData(a->readAll(), list);
-					const QByteArray signature = QByteArray::fromBase64(zipEntryData(b->readAll(), sig).trimmed());
-					if(manifest.isEmpty())
-					{
-						qCWarning(yakamozServer) << "GitHub release list not read - asking the server";
-						return serverCheckUpdate();
-					}
-					if(!verifySignatureWith(QString::fromLatin1(GITHUB_PUBLISHER), manifest, signature))
-					{
-						// Not signed by the publisher: whoever changed the release, nothing of it is installed
-						update_state = "error";
-						update_text = tr("Güncellemenin imzası doğrulanamadı, kurulmadı.");
-						emit updateChanged();
-						qCWarning(yakamozServer) << "GitHub update signature rejected";
-						return;
-					}
-					const QJsonObject m = QJsonDocument::fromJson(manifest).object();
-					qCInfo(yakamozServer) << "GitHub release" << m.value("version").toString();
-					takeManifest(manifest, m.value("version").toString(), m.value("notes").toString(), gh_zip_url);
-				};
-				connect(a, &QNetworkReply::finished, this, done);
-				connect(b, &QNetworkReply::finished, this, done);
-			});
+				const QJsonObject m = QJsonDocument::fromJson(manifest).object();
+				qCInfo(yakamozServer) << "GitHub release" << m.value("version").toString();
+				takeManifest(manifest, m.value("version").toString(), m.value("notes").toString(), gh_zip_url);
+			};
+			connect(a, &QNetworkReply::finished, this, done);
+			connect(b, &QNetworkReply::finished, this, done);
 		});
 	});
 }
@@ -2096,6 +2108,17 @@ void OvioraServer::githubCheckUpdate()
 void OvioraServer::serverCheckUpdate()
 {
 	post("update", { { "version", installedVersion() } }, [this](const QJsonObject &r, const QString &error) {
+		// A newer GitHub release the site already read: its zip, without GitHub's API (signed list checked as always)
+		const QJsonObject gh = r.value("github").toObject();
+		if(error.isEmpty() && !gh.isEmpty() && gh.value("zip").toString().startsWith(QLatin1String("https://github.com/"))
+			&& gh.value("size").toDouble() >= 22
+			&& (r.value("none").toBool() || QString::compare(gh.value("version").toString(), r.value("version").toString()) > 0))
+		{
+			gh_zip_url = gh.value("zip").toString();
+			gh_zip_size = qint64(gh.value("size").toDouble());
+			qCInfo(yakamozServer) << "GitHub release" << gh.value("version").toString() << "from the server's address";
+			return githubReadZip(true);
+		}
 		if(!error.isEmpty() || r.value("none").toBool())
 		{
 			update_state = error.isEmpty() ? "none" : "error";
