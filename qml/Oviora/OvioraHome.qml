@@ -2876,7 +2876,7 @@ Pane {
                 font.family: Tema.body
                 font.pixelSize: 17
                 lineHeight: 1.3
-                color: home.server.updateState == "error" ? Tema.danger : Tema.muted
+                color: home.server.updateState == "error" && !home.server.updateRetrying ? Tema.danger : Tema.muted
             }
             Rectangle {
                 Layout.fillWidth: true
@@ -2932,7 +2932,7 @@ Pane {
                         Label {
                             textFormat: Text.PlainText
                             Layout.fillWidth: true
-                            text: qsTr("Bu sürümde")
+                            text: home.server.updateNotesCount > 1 ? qsTr("Son %1 sürümde").arg(home.server.updateNotesCount) : qsTr("Bu sürümde")
                             font.family: Tema.body
                             font.pixelSize: 12
                             font.weight: Font.DemiBold
@@ -2971,6 +2971,79 @@ Pane {
                 kind: "primary"
                 text: qsTr("Tekrar dene")
                 onClicked: home.server.checkUpdate()
+            }
+        }
+    }
+
+    // ── The first start after an update: what it brought, once (closing it in any way forgets it) ──
+    Loader {
+        id: whatsNewLoader
+        active: home.server.whatsNew.length > 0 && !(home.signedIn && home.server.updateRequired)
+        sourceComponent: Component {
+            Item {
+                Popup {
+                    id: whatsNewPopup
+                    parent: Overlay.overlay
+                    z: 90
+                    x: Math.round((home.Window.width - width) / 2)
+                    y: Math.round((home.Window.height - height) / 2)
+                    width: Math.min(520, home.width - 64)
+                    modal: true
+                    dim: true
+                    padding: 24
+                    Component.onCompleted: open()
+                    onClosed: home.server.dismissWhatsNew()
+                    background: Rectangle { radius: Tema.radiusPanel; color: Tema.surface; border.color: Tema.lineStrong }
+                    contentItem: ColumnLayout {
+                        spacing: 14
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            text: home.server.whatsNewCount > 1 ? qsTr("Son %1 sürümde").arg(home.server.whatsNewCount) : qsTr("Bu sürümde")
+                            font.family: Tema.body
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                            font.capitalization: Font.AllUppercase
+                            font.letterSpacing: 0.6
+                            color: Tema.accent
+                        }
+                        Label {
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: qsTr("Oviora güncellendi")
+                            font.family: Tema.display
+                            font.pixelSize: 22
+                            color: Tema.text
+                        }
+                        Flickable {
+                            id: whatsNewFlick
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.min(whatsNewText.implicitHeight, Math.max(120, home.height - 300))
+                            clip: true
+                            contentHeight: whatsNewText.implicitHeight
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: whatsNewFlick.contentHeight > whatsNewFlick.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+                            Label {
+                                id: whatsNewText
+                                width: whatsNewFlick.width - 10
+                                textFormat: Text.PlainText
+                                wrapMode: Text.WordWrap
+                                text: home.server.whatsNew
+                                font.family: Tema.body
+                                font.pixelSize: 14
+                                lineHeight: 1.35
+                                color: Tema.muted
+                            }
+                        }
+                        TextButton {
+                            Layout.alignment: Qt.AlignRight
+                            kind: "primary"
+                            text: qsTr("Tamam")
+                            onClicked: whatsNewPopup.close()
+                        }
+                    }
+                }
             }
         }
     }

@@ -87,6 +87,22 @@ OvioraServer::OvioraServer(Hooks hooks, QObject *parent)
 {
 	load();
 	cleanupOldFiles();
+	{
+		// Just updated (the install wrote what the update brought): shown at this start only, forgotten at once
+		APP_SETTINGS(s);
+		const QString v = s.value(QString(GROUP) + "/whats_new_version").toString();
+		if(!v.isEmpty() && v == installedVersion())
+		{
+			whats_new = s.value(QString(GROUP) + "/whats_new_notes").toString();
+			whats_new_count = s.value(QString(GROUP) + "/whats_new_count", 1).toInt();
+		}
+		if(!v.isEmpty())
+		{
+			s.remove(QString(GROUP) + "/whats_new_version");
+			s.remove(QString(GROUP) + "/whats_new_notes");
+			s.remove(QString(GROUP) + "/whats_new_count");
+		}
+	}
 	test_psn_links = QCoreApplication::arguments().contains(QStringLiteral("--test-psn-links"));
 	test_github_update = QCoreApplication::arguments().contains(QStringLiteral("--test-github-update"));
 	if(test_github_update)
@@ -137,6 +153,8 @@ OvioraServer::OvioraServer(Hooks hooks, QObject *parent)
 	});
 	update_timer.setInterval(UPDATE_CHECK_MS);
 	connect(&update_timer, &QTimer::timeout, this, &OvioraServer::checkUpdate);
+	update_retry.setSingleShot(true);
+	connect(&update_retry, &QTimer::timeout, this, &OvioraServer::checkUpdate);
 	if(configured() && !token.isEmpty())
 		loggedIn();
 
@@ -505,6 +523,7 @@ void OvioraServer::loggedOut(const QString &why)
 	emit groupsChanged();
 	account_timer.stop();
 	update_timer.stop();
+	update_retry.stop();
 	save();
 	emit changed();
 	emit psnLinksChanged();
@@ -1998,6 +2017,15 @@ bool OvioraServer::verifySignatureWith(const QString &publicKey, const QByteArra
 	return ok;
 }
 
+void OvioraServer::dismissWhatsNew()
+{
+	if(whats_new.isEmpty())
+		return;
+	whats_new.clear();
+	whats_new_count = 0;
+	emit whatsNewChanged();
+}
+
 void OvioraServer::checkUpdate()
 {
 	if(!configured() || token.isEmpty() || account_status != "active" || update_state == "downloading" || update_state == "ready")
@@ -2005,6 +2033,12 @@ void OvioraServer::checkUpdate()
 	// Testing a build that is not on the site yet: it must not replace itself with the site's one
 	if(qEnvironmentVariableIsSet("YAKAMOZ_TEST_GUNCELLEME_YOK") || test_github_update)
 		return;
+	// One check at a time (the start-up check and the server's "update required" came together and two downloads
+	// wrote the same files: "Güncelleme indirilemedi (Oviora.exe)"); one that hung for a minute does not block
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if(update_state == "checking" && now - update_checking_since < 60 * 1000)
+		return;
+	update_checking_since = now;
 	update_state = "checking";
 	update_text = tr("Güncelleme denetleniyor…");
 	emit updateChanged();
@@ -2056,9 +2090,7 @@ void OvioraServer::githubReadZip(bool fromServer)
 		qCWarning(yakamozServer) << what << error << (fromServer ? "" : "- asking the server");
 		if(!fromServer)
 			return serverCheckUpdate();
-		update_state = "error";
-		update_text = tr("Güncelleme indirilemedi, biraz sonra yeniden denenecek.");
-		emit updateChanged();
+		updateFailed(tr("Güncelleme indirilemedi."));
 	};
 	// The zip's tail (its end record), then its central directory
 	QNetworkReply *tail = zipRange(qMax<qint64>(0, gh_zip_size - 66000), gh_zip_size - 1);
@@ -2121,8 +2153,10 @@ void OvioraServer::serverCheckUpdate()
 		}
 		if(!error.isEmpty() || r.value("none").toBool())
 		{
-			update_state = error.isEmpty() ? "none" : "error";
-			update_text = error.isEmpty() ? tr("Henüz yayınlanmış bir güncelleme yok.") : error;
+			if(!error.isEmpty())
+				return updateFailed(error);
+			update_state = "none";
+			update_text = tr("Henüz yayınlanmış bir güncelleme yok.");
 			emit updateChanged();
 			return;
 		}
@@ -2143,7 +2177,22 @@ void OvioraServer::serverCheckUpdate()
 void OvioraServer::takeManifest(const QByteArray &manifest, const QString &version, const QString &notes, const QString &packUrl)
 {
 	update_version = version;
-	update_notes = notes;
+	update_notes = notes.trimmed();
+	update_notes_count = 1;
+	// Releases between the installed one and this (the GitHub list carries the notes of the last ones, newest
+	// first): an app that skipped some shows all they brought
+	if(const QString installed = installedVersion(); !installed.isEmpty())
+	{
+		for(const QJsonValue &v : QJsonDocument::fromJson(manifest).object().value("history").toArray())
+		{
+			const QString ver = v.toObject().value("version").toString();
+			const QString n = v.toObject().value("notes").toString().trimmed();
+			if(n.isEmpty() || QString::compare(ver, installed) <= 0 || QString::compare(ver, version) >= 0)
+				continue;
+			update_notes += (update_notes.isEmpty() ? QString() : QStringLiteral("\n\n")) + tr("%1 sürümünde:").arg(ver) + QLatin1Char('\n') + n;
+			update_notes_count++;
+		}
+	}
 #ifndef OVIORA_PLATFORM_UPDATES
 	// Development build: never download or install the published release
 	if(!test_github_update)
@@ -2203,6 +2252,9 @@ void OvioraServer::takeManifest(const QByteArray &manifest, const QString &versi
 	auto watcher = new QFutureWatcher<QList<UpdateFile>>(this);
 	connect(watcher, &QFutureWatcher<QList<UpdateFile>>::finished, this, [this, watcher, files]() {
 		watcher->deleteLater();
+		// Another list already downloads (or is ready): this one is left
+		if(update_state == "downloading" || update_state == "ready")
+			return;
 		update_files = files;
 		update_queue = watcher->result();
 		qCInfo(yakamozServer) << "Update" << update_version << "files" << files.size() << "to download" << update_queue.size();
@@ -2264,10 +2316,22 @@ void OvioraServer::takeManifest(const QByteArray &manifest, const QString &versi
 	}));
 }
 
+// Not "could not": the check runs again by itself in 10 s (after 6 failures in a row, every minute)
+void OvioraServer::updateFailed(const QString &what)
+{
+	update_failures++;
+	const int seconds = update_failures <= 6 ? 10 : 60;
+	update_state = "error";
+	update_text = tr("%1 %2 saniye sonra yeniden denenecek.").arg(what).arg(seconds);
+	update_retry.start(seconds * 1000);
+	emit updateChanged();
+}
+
 void OvioraServer::downloadNext()
 {
 	if(update_queue.isEmpty())
 	{
+		update_failures = 0;
 		update_state = "ready";
 		update_progress = 1;
 		update_text = tr("Sürüm %1 indirildi. Yeniden başlatınca kurulur.").arg(update_version);
@@ -2282,10 +2346,7 @@ void OvioraServer::downloadNext()
 	download_file = new QFile(target + ".part");
 	if(!download_file->open(QIODevice::WriteOnly | QIODevice::Truncate))
 	{
-		update_state = "error";
-		update_text = tr("Güncelleme dosyası yazılamadı: %1").arg(f.path);
-		emit updateChanged();
-		return;
+		return updateFailed(tr("Güncelleme dosyası yazılamadı: %1.").arg(f.path));
 	}
 	if(f.offset >= 0 && f.csize > 0 && !gh_pack_url.isEmpty())
 	{
@@ -2321,10 +2382,7 @@ void OvioraServer::downloadNext()
 				download_file->close();
 				download_file->remove();
 				update_bytes_done = doneBefore;
-				update_state = "error";
-				update_text = tr("Güncelleme indirilemedi (%1), sonra tekrar denenecek.").arg(f.path);
-				emit updateChanged();
-				return;
+				return updateFailed(tr("Güncelleme indirilemedi (%1).").arg(f.path));
 			}
 			download_file->close();
 			update_bytes_done = doneBefore + f.size;
@@ -2367,10 +2425,7 @@ void OvioraServer::downloadNext()
 		if(!ok || QString::fromLatin1(h.result().toHex()) != f.sha256)
 		{
 			download_file->remove();
-			update_state = "error";
-			update_text = tr("Güncelleme indirilemedi (%1), sonra tekrar denenecek.").arg(f.path);
-			emit updateChanged();
-			return;
+			return updateFailed(tr("Güncelleme indirilemedi (%1).").arg(f.path));
 		}
 		QFile::remove(target);
 		download_file->rename(target);
@@ -2419,6 +2474,13 @@ void OvioraServer::applyUpdate()
 	QDir(stage).removeRecursively();
 	APP_SETTINGS(s);
 	s.setValue(QString(GROUP) + "/installed_version", update_version);
+	// Shown once at the next start ("Bu sürümde")
+	if(!update_notes.isEmpty())
+	{
+		s.setValue(QString(GROUP) + "/whats_new_version", update_version);
+		s.setValue(QString(GROUP) + "/whats_new_notes", update_notes);
+		s.setValue(QString(GROUP) + "/whats_new_count", update_notes_count);
+	}
 	qCInfo(yakamozServer) << "Update" << update_version << "installed," << moved << "files, restarting";
 	// An update may bring the program under its new name: that one is started then
 	QString restart = QCoreApplication::applicationFilePath();

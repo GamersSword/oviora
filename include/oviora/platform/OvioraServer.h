@@ -72,10 +72,17 @@ class OvioraServer : public QObject
 	Q_PROPERTY(QStringList incoming READ incoming NOTIFY requestsChanged)
 	Q_PROPERTY(QStringList outgoing READ outgoing NOTIFY requestsChanged)
 	Q_PROPERTY(QString updateState READ updateState NOTIFY updateChanged)  // none, checking, downloading, ready, error
+	// A failed check or download will be tried again by itself (the update screen shows it calmly, not as an error)
+	Q_PROPERTY(bool updateRetrying READ updateRetrying NOTIFY updateChanged)
 	Q_PROPERTY(QString updateText READ updateText NOTIFY updateChanged)
 	Q_PROPERTY(double updateProgress READ updateProgress NOTIFY updateChanged)
 	Q_PROPERTY(QString updateVersion READ updateVersion NOTIFY updateChanged)
 	Q_PROPERTY(QString updateNotes READ updateNotes NOTIFY updateChanged)
+	// How many releases updateNotes covers (an app that skipped some gets all their notes)
+	Q_PROPERTY(int updateNotesCount READ updateNotesCount NOTIFY updateChanged)
+	// The first start after an update: what it brought, shown once (dismissWhatsNew)
+	Q_PROPERTY(QString whatsNew READ whatsNew NOTIFY whatsNewChanged)
+	Q_PROPERTY(int whatsNewCount READ whatsNewCount NOTIFY whatsNewChanged)
 	Q_PROPERTY(QString installedVersion READ installedVersion NOTIFY updateChanged)
 	/** A newer Yakamoz is on the site: nothing works until it is installed */
 	Q_PROPERTY(bool updateRequired READ updateRequired NOTIFY updateChanged)
@@ -148,10 +155,14 @@ public:
 	QStringList incoming() const;
 	QStringList outgoing() const;
 	QString updateState() const { return update_state; }
+	bool updateRetrying() const { return update_retry.isActive(); }
 	QString updateText() const { return update_text; }
 	double updateProgress() const { return update_progress; }
 	QString updateVersion() const { return update_version; }
 	QString updateNotes() const { return update_notes; }
+	int updateNotesCount() const { return update_notes_count; }
+	QString whatsNew() const { return whats_new; }
+	int whatsNewCount() const { return whats_new_count; }
 	QString installedVersion() const;
 	bool updateRequired() const { return update_required; }
 	QVariantList notifications() const { return notification_list; }
@@ -254,6 +265,7 @@ public:
 	Q_INVOKABLE void runNetworkTest();
 	Q_INVOKABLE void connectTo(const QString &host, const QString &duid);
 	Q_INVOKABLE void checkUpdate();
+	Q_INVOKABLE void dismissWhatsNew();
 	/** Moves the downloaded files in place and starts the new Yakamoz */
 	Q_INVOKABLE void applyUpdate();
 	QVariantMap components() const;
@@ -288,6 +300,7 @@ signals:
 	void accountDeleted();
 	void accountDeleteFailed(const QString &text);
 	void updateChanged();
+	void whatsNewChanged();
 	void message(const QString &title, const QString &text);
 	void psnLoginUrl(const QString &url);
 	/** psn_link answered: ok, and the psnLinks id of the account that sign-in linked or renewed (0: not known) */
@@ -329,6 +342,7 @@ private:
 	void takeLogin(const QJsonObject &reply);
 	void takeAccount(const QJsonObject &reply);
 	void requireUpdate();
+	void updateFailed(const QString &what);
 	/** An account change on the server; its answer is the new account view */
 	void accountCall(const QString &action, QJsonObject body, const QString &fail_title);
 	void setSession(const QString &state);
@@ -423,6 +437,9 @@ private:
 	void clearSessionInfo();
 
 	QString update_state = "none", update_text, update_version, update_notes;
+	int update_notes_count = 1;
+	QString whats_new;
+	int whats_new_count = 0;
 	bool update_required = false;
 	double update_progress = 0;
 	QList<UpdateFile> update_files, update_queue;
@@ -433,6 +450,11 @@ private:
 	qint64 gh_zip_size = 0;
 	// GitHub's API refused (403/429: 60 requests an hour per address): until then the server is asked instead
 	qint64 gh_api_blocked_until = 0;
+	// When the running check started: a second one meanwhile would download the same files into the same place
+	qint64 update_checking_since = 0;
+	// A failed check or download is tried again by itself: 10 s, after 6 failures in a row every minute
+	QTimer update_retry;
+	int update_failures = 0;
 	QHash<QString, ZipEntry> gh_entries;
 	QFile *download_file = nullptr;
 	// Development build (no OVIORA_PLATFORM_UPDATES): the release the server offers, sent as ours
